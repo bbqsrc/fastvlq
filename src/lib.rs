@@ -115,28 +115,28 @@ macro_rules! offset {
         0
     };
     (2) => {
-        2u16.pow(7)
+        1 << 7
     };
     (3) => {
-        offset!(2) as u32 + 2u32.pow(14)
+        offset!(2) as u32 + (1 << 14)
     };
     (4) => {
-        offset!(3) as u32 + 2u32.pow(21)
+        offset!(3) as u32 + (1 << 21)
     };
     (5) => {
-        offset!(4) as u64 + 2u64.pow(28)
+        offset!(4) as u64 + (1 << 28)
     };
     (6) => {
-        offset!(5) + 2u64.pow(35)
+        offset!(5) + (1 << 35)
     };
     (7) => {
-        offset!(6) + 2u64.pow(42)
+        offset!(6) + (1 << 42)
     };
     (8) => {
-        offset!(7) + 2u64.pow(49)
+        offset!(7) + (1 << 49)
     };
     (9) => {
-        offset!(8) + 2u64.pow(56)
+        offset!(8) + (1 << 56)
     };
 }
 
@@ -179,7 +179,7 @@ macro_rules! encode_offset {
 /// 0000_0001: 8 bytes
 /// 0000_0000: 9 bytes
 #[inline(always)]
-fn decode_len_vu64(n: u8) -> u8 {
+const fn decode_len_vu64(n: u8) -> u8 {
     n.leading_zeros() as u8 + 1
 }
 
@@ -195,7 +195,7 @@ fn decode_len_vu64(n: u8) -> u8 {
 /// 8: 56 (1 + 8 * 7) bits
 /// 9: 64 (1 + 8 * 8) bits
 #[inline(always)]
-fn encode_len_vu64(n: u64) -> u8 {
+const fn encode_len_vu64(n: u64) -> u8 {
     match n {
         n if n < offset!(2) as u64 => 1,
         n if n < offset!(3) as u64 => 2,
@@ -209,10 +209,20 @@ fn encode_len_vu64(n: u64) -> u8 {
     }
 }
 
+macro_rules! copy_from_slice_offset {
+    (source = $source:ident, dest = $dest:ident, offset = $offset:tt) => {
+        let mut i = 0;
+        while i < $offset {
+            $dest[i] = $source[i];
+            i += 1;
+        }
+    };
+}
+
 #[inline(always)]
-pub fn encode_vu64(n: u64) -> Vu64 {
+pub const fn encode_vu64(n: u64) -> Vu64 {
     let len = encode_len_vu64(n);
-    let mut out_buf = [0u8; 9];
+    let mut out_buf = [0u8; VU64_BUF_SIZE];
 
     match len {
         1 => {
@@ -220,42 +230,46 @@ pub fn encode_vu64(n: u64) -> Vu64 {
         }
         2 => {
             let buf = encode_offset!(2, n).to_be_bytes();
-            (&mut out_buf[..2]).copy_from_slice(&buf[..2]);
+            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 2);
             out_buf[0] = prefix!(2, buf[0]);
         }
         3 => {
             let buf = encode_offset!(3, n).to_be_bytes();
-            (&mut out_buf[..3]).copy_from_slice(&buf[..3]);
+            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 3);
             out_buf[0] = prefix!(3, buf[0]);
         }
         4 => {
             let buf = encode_offset!(4, n).to_be_bytes();
-            (&mut out_buf[..4]).copy_from_slice(&buf[..4]);
+            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 4);
             out_buf[0] = prefix!(4, buf[0]);
         }
         5 => {
             let buf = encode_offset!(5, n).to_be_bytes();
-            (&mut out_buf[..5]).copy_from_slice(&buf[..5]);
+            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 5);
             out_buf[0] = prefix!(5, buf[0]);
         }
         6 => {
             let buf = encode_offset!(6, n).to_be_bytes();
-            (&mut out_buf[..6]).copy_from_slice(&buf[..6]);
+            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 6);
             out_buf[0] = prefix!(6, buf[0]);
         }
         7 => {
             let buf = encode_offset!(7, n).to_be_bytes();
-            (&mut out_buf[..7]).copy_from_slice(&buf[..7]);
+            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 7);
             out_buf[0] = prefix!(7, buf[0]);
         }
         8 => {
             let buf = encode_offset!(8, n).to_be_bytes();
-            (&mut out_buf[..8]).copy_from_slice(&buf[..8]);
+            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 8);
             out_buf[0] = prefix!(8, buf[0]);
         }
         _ => {
             let buf = encode_offset!(9, n).to_be_bytes();
-            (&mut out_buf[1..9]).copy_from_slice(&buf[..8]);
+            let mut i = 0;
+            while i < 8 {
+                out_buf[i + 1] = buf[i];
+                i += 1;
+            }
             out_buf[0] = prefix!(9, buf[0]);
         }
     };
@@ -264,7 +278,7 @@ pub fn encode_vu64(n: u64) -> Vu64 {
 }
 
 #[inline(always)]
-pub fn decode_vu64(n: Vu64) -> u64 {
+pub const fn decode_vu64(n: Vu64) -> u64 {
     let len = n.len();
     let n = n.bytes();
 
@@ -300,29 +314,31 @@ pub fn decode_vu64(n: Vu64) -> u64 {
     }
 }
 
+const VU64_BUF_SIZE: usize = 9;
+
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct Vu64([u8; 9]);
+pub struct Vu64([u8; VU64_BUF_SIZE]);
 
 #[allow(clippy::len_without_is_empty)]
 impl Vu64 {
     #[inline(always)]
-    pub fn new(value: u64) -> Vu64 {
+    pub const fn new(value: u64) -> Vu64 {
         encode_vu64(value)
     }
 
     #[inline(always)]
-    pub fn len(&self) -> u8 {
+    pub const fn len(&self) -> u8 {
         decode_len_vu64(self.0[0])
     }
 
     #[inline(always)]
-    pub fn get(&self) -> u64 {
+    pub const fn get(&self) -> u64 {
         decode_vu64(*self)
     }
 
     #[inline(always)]
-    pub fn bytes(&self) -> [u8; 9] {
+    pub const fn bytes(&self) -> [u8; 9] {
         self.0
     }
 }
