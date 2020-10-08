@@ -17,10 +17,12 @@ jobs:
           toolchain: ${{ matrix.rust }}
           override: true
       - name: Run tests (std)
+        uses: actions-rs/cargo@v1
         with:
           command: test
           args: --all-features
       - name: Run tests (no_std)
+        uses: actions-rs/cargo@v1
         with:
           command: test
           args: --no-default-features
