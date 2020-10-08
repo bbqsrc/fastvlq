@@ -6,7 +6,7 @@
 //! take up a maximum of 9 bytes (for values greater than 56-bit).
 //!
 //! This crate does not enforce an invariant that a number may only have one representation,
-//! which means that it is possible to encode `1` as, for example, both `0b1000_0001` and 
+//! which means that it is possible to encode `1` as, for example, both `0b1000_0001` and
 //! `0b0100_0000_0000_0001`.
 //!
 //! ## Usage
@@ -24,59 +24,147 @@
 extern crate core;
 
 macro_rules! prefix {
-    (1) => { 0b1000_0000 };
-    (2) => { 0b0100_0000 };
-    (3) => { 0b0010_0000 };
-    (4) => { 0b0001_0000 };
-    (5) => { 0b0000_1000 };
-    (6) => { 0b0000_0100 };
-    (7) => { 0b0000_0010 };
-    (8) => { 0b0000_0001 };
-    (9) => { 0b0000_0000 };
-    (1, $target:expr) => { $target | 0b1000_0000 };
-    (2, $target:expr) => { (0b0011_1111 & $target) | 0b0100_0000 };
-    (3, $target:expr) => { (0b0001_1111 & $target) | 0b0010_0000 };
-    (4, $target:expr) => { (0b0000_1111 & $target) | 0b0001_0000 };
-    (5, $target:expr) => { (0b0000_0111 & $target) | 0b0000_1000 };
-    (6, $target:expr) => { (0b0000_0011 & $target) | 0b0000_0100 };
-    (7, $target:expr) => { (0b0000_0001 & $target) | 0b0000_0010 };
-    (8, $target:expr) => { 0b0000_0001 };
-    (9, $target:expr) => { 0b0000_0000 };
+    (1) => {
+        0b1000_0000
+    };
+    (2) => {
+        0b0100_0000
+    };
+    (3) => {
+        0b0010_0000
+    };
+    (4) => {
+        0b0001_0000
+    };
+    (5) => {
+        0b0000_1000
+    };
+    (6) => {
+        0b0000_0100
+    };
+    (7) => {
+        0b0000_0010
+    };
+    (8) => {
+        0b0000_0001
+    };
+    (9) => {
+        0b0000_0000
+    };
+    (1, $target:expr) => {
+        $target | 0b1000_0000
+    };
+    (2, $target:expr) => {
+        (0b0011_1111 & $target) | 0b0100_0000
+    };
+    (3, $target:expr) => {
+        (0b0001_1111 & $target) | 0b0010_0000
+    };
+    (4, $target:expr) => {
+        (0b0000_1111 & $target) | 0b0001_0000
+    };
+    (5, $target:expr) => {
+        (0b0000_0111 & $target) | 0b0000_1000
+    };
+    (6, $target:expr) => {
+        (0b0000_0011 & $target) | 0b0000_0100
+    };
+    (7, $target:expr) => {
+        (0b0000_0001 & $target) | 0b0000_0010
+    };
+    (8, $target:expr) => {
+        0b0000_0001
+    };
+    (9, $target:expr) => {
+        0b0000_0000
+    };
 }
 
 macro_rules! unprefix {
-    (1, $target:expr) => { $target & 0b0111_1111 };
-    (2, $target:expr) => { $target & 0b0011_1111 };
-    (3, $target:expr) => { $target & 0b0001_1111 };
-    (4, $target:expr) => { $target & 0b0000_1111 };
-    (5, $target:expr) => { $target & 0b0000_0111 };
-    (6, $target:expr) => { $target & 0b0000_0011 };
-    (7, $target:expr) => { $target & 0b0000_0001 };
-    (8, $target:expr) => { 0b0000_0000 };
-    (9, $target:expr) => { 0b0000_0000 };
+    (1, $target:expr) => {
+        $target & 0b0111_1111
+    };
+    (2, $target:expr) => {
+        $target & 0b0011_1111
+    };
+    (3, $target:expr) => {
+        $target & 0b0001_1111
+    };
+    (4, $target:expr) => {
+        $target & 0b0000_1111
+    };
+    (5, $target:expr) => {
+        $target & 0b0000_0111
+    };
+    (6, $target:expr) => {
+        $target & 0b0000_0011
+    };
+    (7, $target:expr) => {
+        $target & 0b0000_0001
+    };
+    (8, $target:expr) => {
+        0b0000_0000
+    };
+    (9, $target:expr) => {
+        0b0000_0000
+    };
 }
 
 macro_rules! offset {
-    (1) => { 0 };
-    (2) => { 2u16.pow(7) };
-    (3) => { offset!(2) as u32 + 2u32.pow(14) };
-    (4) => { offset!(3) as u32 + 2u32.pow(21) };
-    (5) => { offset!(4) as u64 + 2u64.pow(28) };
-    (6) => { offset!(5) + 2u64.pow(35) };
-    (7) => { offset!(6) + 2u64.pow(42) };
-    (8) => { offset!(7) + 2u64.pow(49) };
-    (9) => { offset!(8) + 2u64.pow(56) };
+    (1) => {
+        0
+    };
+    (2) => {
+        2u16.pow(7)
+    };
+    (3) => {
+        offset!(2) as u32 + 2u32.pow(14)
+    };
+    (4) => {
+        offset!(3) as u32 + 2u32.pow(21)
+    };
+    (5) => {
+        offset!(4) as u64 + 2u64.pow(28)
+    };
+    (6) => {
+        offset!(5) + 2u64.pow(35)
+    };
+    (7) => {
+        offset!(6) + 2u64.pow(42)
+    };
+    (8) => {
+        offset!(7) + 2u64.pow(49)
+    };
+    (9) => {
+        offset!(8) + 2u64.pow(56)
+    };
 }
 
 macro_rules! encode_offset {
-    (2, $n:tt) => { $n as u16 - offset!(2) };
-    (3, $n:tt) => { ($n as u32 - offset!(3)) << 8 };
-    (4, $n:tt) => { ($n as u32 - offset!(4)) };
-    (5, $n:tt) => { ($n as u64 - offset!(5)) << (8 * 3) };
-    (6, $n:tt) => { ($n as u64 - offset!(6)) << (8 * 2) };
-    (7, $n:tt) => { ($n as u64 - offset!(7)) << 8 };
-    (8, $n:tt) => { ($n as u64 - offset!(8)) };
-    (9, $n:tt) => { ($n as u64 - offset!(9)) };
+    (2, $n:tt) => {
+        $n as u16 - offset!(2)
+    };
+    (3, $n:tt) => {
+        ($n as u32 - offset!(3)) << 8
+    };
+    (4, $n:tt) => {
+        ($n as u32 - offset!(4))
+    };
+    (5, $n:tt) => {
+        ($n as u64 - offset!(5)) << (8 * 3)
+    };
+    (6, $n:tt) => {
+        ($n as u64 - offset!(6)) << (8 * 2)
+    };
+    (7, $n:tt) => {
+        ($n as u64 - offset!(7)) << 8
+    };
+    (8, $n:tt) => {
+        ($n as u64 - offset!(8))
+    };
+    (9, $n:tt) => {
+        ($n as u64 - offset!(9))
+    };
 }
 
 /// Decoding bit depth by prefix in bits:
@@ -117,7 +205,7 @@ fn encode_len_vu64(n: u64) -> u8 {
         n if n < offset!(7) => 6,
         n if n < offset!(8) => 7,
         n if n < offset!(9) => 8,
-        _ => 9
+        _ => 9,
     }
 }
 
@@ -183,13 +271,32 @@ pub fn decode_vu64(n: Vu64) -> u64 {
     match len {
         1 => unprefix!(1, n[0] as u64),
         2 => u64::from_le_bytes([n[1], unprefix!(2, n[0]), 0, 0, 0, 0, 0, 0]) + offset!(2) as u64,
-        3 => u64::from_le_bytes([n[2], n[1], unprefix!(3, n[0]), 0, 0, 0, 0, 0]) + offset!(3) as u64,
-        4 => u64::from_le_bytes([n[3], n[2], n[1], unprefix!(4, n[0]), 0, 0, 0, 0]) + offset!(4) as u64,
-        5 => u64::from_le_bytes([n[4], n[3], n[2], n[1], unprefix!(5, n[0]), 0, 0, 0]) + offset!(5) as u64,
-        6 => u64::from_le_bytes([n[5], n[4], n[3], n[2], n[1], unprefix!(6, n[0]), 0, 0]) + offset!(6) as u64,
-        7 => u64::from_le_bytes([n[6], n[5], n[4], n[3], n[2], n[1], unprefix!(7, n[0]), 0]) + offset!(7) as u64,
-        8 => u64::from_le_bytes([n[7], n[6], n[5], n[4], n[3], n[2], n[1], unprefix!(8, n[0])]) + offset!(8) as u64,
-        _ => u64::from_le_bytes([n[8], n[7], n[6], n[5], n[4], n[3], n[2], n[1]]) + offset!(9) as u64,
+        3 => {
+            u64::from_le_bytes([n[2], n[1], unprefix!(3, n[0]), 0, 0, 0, 0, 0]) + offset!(3) as u64
+        }
+        4 => {
+            u64::from_le_bytes([n[3], n[2], n[1], unprefix!(4, n[0]), 0, 0, 0, 0])
+                + offset!(4) as u64
+        }
+        5 => {
+            u64::from_le_bytes([n[4], n[3], n[2], n[1], unprefix!(5, n[0]), 0, 0, 0])
+                + offset!(5) as u64
+        }
+        6 => {
+            u64::from_le_bytes([n[5], n[4], n[3], n[2], n[1], unprefix!(6, n[0]), 0, 0])
+                + offset!(6) as u64
+        }
+        7 => {
+            u64::from_le_bytes([n[6], n[5], n[4], n[3], n[2], n[1], unprefix!(7, n[0]), 0])
+                + offset!(7) as u64
+        }
+        8 => {
+            u64::from_le_bytes([n[7], n[6], n[5], n[4], n[3], n[2], n[1], unprefix!(8, n[0])])
+                + offset!(8) as u64
+        }
+        _ => {
+            u64::from_le_bytes([n[8], n[7], n[6], n[5], n[4], n[3], n[2], n[1]]) + offset!(9) as u64
+        }
     }
 }
 
@@ -199,6 +306,11 @@ pub struct Vu64([u8; 9]);
 
 #[allow(clippy::len_without_is_empty)]
 impl Vu64 {
+    #[inline(always)]
+    pub fn new(value: u64) -> Vu64 {
+        encode_vu64(value)
+    }
+
     #[inline(always)]
     pub fn len(&self) -> u8 {
         decode_len_vu64(self.0[0])
@@ -210,8 +322,20 @@ impl Vu64 {
     }
 
     #[inline(always)]
-    fn bytes(&self) -> [u8; 9] {
+    pub fn bytes(&self) -> [u8; 9] {
         self.0
+    }
+}
+
+impl From<u64> for Vu64 {
+    fn from(n: u64) -> Self {
+        encode_vu64(n)
+    }
+}
+
+impl From<Vu64> for u64 {
+    fn from(n: Vu64) -> Self {
+        decode_vu64(n)
     }
 }
 
@@ -301,10 +425,26 @@ mod tests {
         assert_eq!(decode_vu64(encode_vu64(0x4000)), 0x4000, "min for 3");
         assert_eq!(decode_vu64(encode_vu64(0x0F_FFFF)), 0x0F_FFFF, "max for 3");
         assert_eq!(decode_vu64(encode_vu64(0x20_0000)), 0x20_0000, "min for 4");
-        assert_eq!(decode_vu64(encode_vu64(0x1FFF_FFFF)), 0x1FFF_FFFF, "max for 4");
-        assert_eq!(decode_vu64(encode_vu64(0x2000_0000)), 0x2000_0000, "min for 5");
-        assert_eq!(decode_vu64(encode_vu64(0x17_FFFF_FFFF)), 0x17_FFFF_FFFF, "max for 5");
-        assert_eq!(decode_vu64(encode_vu64(0x18_0000_0000)), 0x18_0000_0000, "min for 6");
+        assert_eq!(
+            decode_vu64(encode_vu64(0x1FFF_FFFF)),
+            0x1FFF_FFFF,
+            "max for 4"
+        );
+        assert_eq!(
+            decode_vu64(encode_vu64(0x2000_0000)),
+            0x2000_0000,
+            "min for 5"
+        );
+        assert_eq!(
+            decode_vu64(encode_vu64(0x17_FFFF_FFFF)),
+            0x17_FFFF_FFFF,
+            "max for 5"
+        );
+        assert_eq!(
+            decode_vu64(encode_vu64(0x18_0000_0000)),
+            0x18_0000_0000,
+            "min for 6"
+        );
         assert_eq!(
             decode_vu64(encode_vu64(0x13FF_FFFF_FFFF)),
             0x13FF_FFFF_FFFF,
@@ -336,7 +476,10 @@ mod tests {
             "min for 9"
         );
         assert_eq!(decode_vu64(encode_vu64(core::u64::MAX)), core::u64::MAX);
-        assert_eq!(decode_vu64(encode_vu64(core::i64::MIN as u64)) as i64, core::i64::MIN);
+        assert_eq!(
+            decode_vu64(encode_vu64(core::i64::MIN as u64)) as i64,
+            core::i64::MIN
+        );
 
         assert_eq!(1, decode_vu64(encode_vu64(0x1)), "1");
         assert_eq!(0, decode_vu64(encode_vu64(0x0)), "0");
@@ -352,6 +495,10 @@ mod tests {
             decode_vu64(encode_vu64(0x1011_1111_1111_1111)),
             "5"
         );
-        assert_eq!(core::u64::MAX, decode_vu64(encode_vu64(core::u64::MAX)), "max");
+        assert_eq!(
+            core::u64::MAX,
+            decode_vu64(encode_vu64(core::u64::MAX)),
+            "max"
+        );
     }
 }
