@@ -1,20 +1,13 @@
 //! ## Algorithm
 //!
-//! Value-length quantity encoding is an implementation of variable-length integers.
+//! Fast VLQ is a variant of value-length quantity encoding, with a focus on encoding and
+//! decoding speed. The total number of bytes an always be derived from the very first byte,
+//! and unlike VLQ, the integer type supported is `u64` exclusively, and will
+//! take up a maximum of 9 bytes (for values greater than 56-bit).
 //!
-//! Each byte is encoded into 7 bits, with the highest bit of the byte used to indicate
-//! if there are any further bytes to read. Reading will continue until the highest bit
-//! is `1`, or will result in an error if the number is too large to fit in the desired
-//! type.
-//!
-//! For example, the number `60000` (or `0xEA60` in hexadecimal):
-//!
-//! ```markdown
-//!          11101010 01100000  [as u16]
-//!       11  1010100  1100000  [as separated into 7-bit groups]
-//!  1100000  1010100       11  [re-organized so least significant byte first]
-//! 11100000 11010100 00000011  [as VLQ-encoded variable-length integer]
-//! ```
+//! This crate does not enforce an invariant that a number may only have one representation,
+//! which means that it is possible to encode `1` as, for example, both `0b1000_0001` and 
+//! `0b0100_0000_0000_0001`.
 //!
 //! ## Usage
 //!
@@ -22,207 +15,348 @@
 //!
 //! ```toml
 //! [dependencies]
-//! vlq = { package = "vlq-rust", version = "0.2" }
-//! ```
-//!
-//! Use `ReadVlqExt` and `WriteVlqExt` to get the `read_vlq` and `write_vlq` functions
-//! on every `std::io::Read` and `std::io::Write` implementation.
-//!
-//! ## Example
-//!
-//! ```
-//! # use vlq_rust as vlq;
-//! use vlq::{ReadVlqExt, WriteVlqExt};
-//!
-//! let mut data = std::io::Cursor::new(vec![]);
-//! data.write_vlq(std::u64::MAX).unwrap();
-//! data.set_position(0);
-//!
-//! let x: u64 = data.read_vlq().unwrap();
-//! assert_eq!(x, std::u64::MAX);
-//!
-//! let mut data = std::io::Cursor::new(vec![]);
-//! data.write_vlq(std::i64::MIN).unwrap();
-//! data.set_position(0);
-//!
-//! let x: i64 = data.read_vlq().unwrap();
-//! assert_eq!(x, std::i64::MIN);
+//! fastvlq = "1"
 //! ```
 
-pub mod fast;
+#![allow(clippy::cast_lossless)]
 
-/// Trait applied to all types that can be encoded as VLQ's.
-pub trait Vlq: Sized {
-    /// Read a variable-length quantity from a reader.
-    fn from_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self>;
-
-    /// Write this variable-length quantity to a writer.
-    fn to_writer<W: std::io::Write>(self, writer: &mut W) -> std::io::Result<()>;
+macro_rules! prefix {
+    (1) => { 0b1000_0000 };
+    (2) => { 0b0100_0000 };
+    (3) => { 0b0010_0000 };
+    (4) => { 0b0001_0000 };
+    (5) => { 0b0000_1000 };
+    (6) => { 0b0000_0100 };
+    (7) => { 0b0000_0010 };
+    (8) => { 0b0000_0001 };
+    (9) => { 0b0000_0000 };
+    (1, $target:expr) => { $target | 0b1000_0000 };
+    (2, $target:expr) => { (0b0011_1111 & $target) | 0b0100_0000 };
+    (3, $target:expr) => { (0b0001_1111 & $target) | 0b0010_0000 };
+    (4, $target:expr) => { (0b0000_1111 & $target) | 0b0001_0000 };
+    (5, $target:expr) => { (0b0000_0111 & $target) | 0b0000_1000 };
+    (6, $target:expr) => { (0b0000_0011 & $target) | 0b0000_0100 };
+    (7, $target:expr) => { (0b0000_0001 & $target) | 0b0000_0010 };
+    (8, $target:expr) => { 0b0000_0001 };
+    (9, $target:expr) => { 0b0000_0000 };
 }
 
-pub trait ReadVlqExt<T> {
-    /// Read a variable-length quantity.
-    fn read_vlq(&mut self) -> std::io::Result<T>;
+macro_rules! unprefix {
+    (1, $target:expr) => { $target & 0b0111_1111 };
+    (2, $target:expr) => { $target & 0b0011_1111 };
+    (3, $target:expr) => { $target & 0b0001_1111 };
+    (4, $target:expr) => { $target & 0b0000_1111 };
+    (5, $target:expr) => { $target & 0b0000_0111 };
+    (6, $target:expr) => { $target & 0b0000_0011 };
+    (7, $target:expr) => { $target & 0b0000_0001 };
+    (8, $target:expr) => { 0b0000_0000 };
+    (9, $target:expr) => { 0b0000_0000 };
 }
 
-pub trait WriteVlqExt<T> {
-    /// Write a variable-length quantity.
-    fn write_vlq(&mut self, n: T) -> std::io::Result<()>;
+macro_rules! offset {
+    (1) => { 0 };
+    (2) => { 2u16.pow(7) };
+    (3) => { offset!(2) as u32 + 2u32.pow(14) };
+    (4) => { offset!(3) as u32 + 2u32.pow(21) };
+    (5) => { offset!(4) as u64 + 2u64.pow(28) };
+    (6) => { offset!(5) + 2u64.pow(35) };
+    (7) => { offset!(6) + 2u64.pow(42) };
+    (8) => { offset!(7) + 2u64.pow(49) };
+    (9) => { offset!(8) + 2u64.pow(56) };
 }
 
-impl<T: Vlq, R: ::std::io::Read> ReadVlqExt<T> for R {
-    fn read_vlq(&mut self) -> std::io::Result<T> {
-        T::from_reader(self)
+macro_rules! encode_offset {
+    (2, $n:tt) => { $n as u16 - offset!(2) };
+    (3, $n:tt) => { ($n as u32 - offset!(3)) << 8 };
+    (4, $n:tt) => { ($n as u32 - offset!(4)) };
+    (5, $n:tt) => { ($n as u64 - offset!(5)) << (8 * 3) };
+    (6, $n:tt) => { ($n as u64 - offset!(6)) << (8 * 2) };
+    (7, $n:tt) => { ($n as u64 - offset!(7)) << 8 };
+    (8, $n:tt) => { ($n as u64 - offset!(8)) };
+    (9, $n:tt) => { ($n as u64 - offset!(9)) };
+}
+
+/// Decoding bit depth by prefix in bits:
+///
+/// 1xxx_xxxx: 1 byte
+/// 01xx_xxxx: 2 bytes
+/// 001x_xxxx: 3 bytes
+/// 0001_xxxx: 4 bytes
+/// 0000_1xxx: 5 bytes
+/// 0000_01xx: 6 bytes
+/// 0000_001x: 7 bytes
+/// 0000_0001: 8 bytes
+/// 0000_0000: 9 bytes
+#[inline(always)]
+fn decode_len_vu64(n: u8) -> u8 {
+    n.leading_zeros() as u8 + 1
+}
+
+/// Encoding bit depth by length in bytes:
+///
+/// 1: 7 bits
+/// 2: 14 (6 + 8) bits
+/// 3: 20 (5 + 8 * 2) bits
+/// 4: 28 (4 + 8 * 3) bits
+/// 5: 35 (3 + 8 * 4) bits
+/// 6: 42 (2 + 8 * 5) bits
+/// 7: 49 (0 + 8 * 6) bits
+/// 8: 56 (1 + 8 * 7) bits
+/// 9: 64 (1 + 8 * 8) bits
+#[inline(always)]
+fn encode_len_vu64(n: u64) -> u8 {
+    match n {
+        n if n < offset!(2) as u64 => 1,
+        n if n < offset!(3) as u64 => 2,
+        n if n < offset!(4) as u64 => 3,
+        n if n < offset!(5) => 4,
+        n if n < offset!(6) => 5,
+        n if n < offset!(7) => 6,
+        n if n < offset!(8) => 7,
+        n if n < offset!(9) => 8,
+        _ => 9
     }
 }
 
-impl<T: Vlq, W: ::std::io::Write> WriteVlqExt<T> for W {
-    fn write_vlq(&mut self, n: T) -> std::io::Result<()> {
-        n.to_writer(self)
-    }
-}
+#[inline(always)]
+pub fn encode_vu64(n: u64) -> Vu64 {
+    let len = encode_len_vu64(n);
+    let mut out_buf = [0u8; 9];
 
-/// Helper macro to implement the `Vlq` trait for a primitive type.
-macro_rules! impl_primitive {
-    ($ty:ty) => {
-        impl_primitive!($ty, $ty);
-    };
-    ($ty:ty, $uty:ty) => {
-        impl $crate::Vlq for $ty {
-            fn from_reader<R: ::std::io::Read>(reader: &mut R) -> ::std::io::Result<Self> {
-                let mut buf = [0; 1];
-                let mut value: $uty = 0;
-                let mut shift = 1 as $uty;
-
-                loop {
-                    reader.read_exact(&mut buf)?;
-
-                    value = ((buf[0] & 0b0111_1111) as $uty)
-                        .checked_mul(shift)
-                        .and_then(|add| value.checked_add(add))
-                        .ok_or_else(|| {
-                            std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                concat!("provided VLQ data too long to fit into ", stringify!($ty)),
-                            )
-                        })?;
-
-                    if (buf[0] & 0b1000_0000) != 0 {
-                        break;
-                    }
-
-                    shift <<= 7;
-                }
-
-                Ok(value as $ty)
-            }
-
-            fn to_writer<W: ::std::io::Write>(self, writer: &mut W) -> ::std::io::Result<()> {
-                let mut n = self as $uty;
-                let mut vlq_buf = [0u8; std::mem::size_of::<$ty>() * 8 / 7 + 1];
-                let mut index = 0;
-
-                while n >= 0x80 {
-                    vlq_buf[index] = (n & 0b0111_1111) as u8;
-                    index += 1;
-                    n >>= 7;
-                }
-
-                vlq_buf[index] = 0b1000_0000 | n as u8;
-                index += 1;
-                writer.write_all(&vlq_buf[..index])?;
-                Ok(())
-            }
+    match len {
+        1 => {
+            out_buf[0] = prefix!(1, n as u8);
+        }
+        2 => {
+            let buf = encode_offset!(2, n).to_be_bytes();
+            (&mut out_buf[..2]).copy_from_slice(&buf[..2]);
+            out_buf[0] = prefix!(2, buf[0]);
+        }
+        3 => {
+            let buf = encode_offset!(3, n).to_be_bytes();
+            (&mut out_buf[..3]).copy_from_slice(&buf[..3]);
+            out_buf[0] = prefix!(3, buf[0]);
+        }
+        4 => {
+            let buf = encode_offset!(4, n).to_be_bytes();
+            (&mut out_buf[..4]).copy_from_slice(&buf[..4]);
+            out_buf[0] = prefix!(4, buf[0]);
+        }
+        5 => {
+            let buf = encode_offset!(5, n).to_be_bytes();
+            (&mut out_buf[..5]).copy_from_slice(&buf[..5]);
+            out_buf[0] = prefix!(5, buf[0]);
+        }
+        6 => {
+            let buf = encode_offset!(6, n).to_be_bytes();
+            (&mut out_buf[..6]).copy_from_slice(&buf[..6]);
+            out_buf[0] = prefix!(6, buf[0]);
+        }
+        7 => {
+            let buf = encode_offset!(7, n).to_be_bytes();
+            (&mut out_buf[..7]).copy_from_slice(&buf[..7]);
+            out_buf[0] = prefix!(7, buf[0]);
+        }
+        8 => {
+            let buf = encode_offset!(8, n).to_be_bytes();
+            (&mut out_buf[..8]).copy_from_slice(&buf[..8]);
+            out_buf[0] = prefix!(8, buf[0]);
+        }
+        _ => {
+            let buf = encode_offset!(9, n).to_be_bytes();
+            (&mut out_buf[1..9]).copy_from_slice(&buf[..8]);
+            out_buf[0] = prefix!(9, buf[0]);
         }
     };
+
+    Vu64(out_buf)
 }
 
-impl_primitive!(i8, u8);
-impl_primitive!(i16, u16);
-impl_primitive!(i32, u32);
-impl_primitive!(i64, u64);
-impl_primitive!(i128, u128);
-impl_primitive!(isize, usize);
-impl_primitive!(u8);
-impl_primitive!(u16);
-impl_primitive!(u32);
-impl_primitive!(u64);
-impl_primitive!(u128);
-impl_primitive!(usize);
+#[inline(always)]
+pub fn decode_vu64(n: Vu64) -> u64 {
+    let len = n.len();
+    let n = n;
+
+    match len {
+        1 => unprefix!(1, n[0] as u64),
+        2 => u64::from_le_bytes([n[1], unprefix!(2, n[0]), 0, 0, 0, 0, 0, 0]) + offset!(2) as u64,
+        3 => u64::from_le_bytes([n[2], n[1], unprefix!(3, n[0]), 0, 0, 0, 0, 0]) + offset!(3) as u64,
+        4 => u64::from_le_bytes([n[3], n[2], n[1], unprefix!(4, n[0]), 0, 0, 0, 0]) + offset!(4) as u64,
+        5 => u64::from_le_bytes([n[4], n[3], n[2], n[1], unprefix!(5, n[0]), 0, 0, 0]) + offset!(5) as u64,
+        6 => u64::from_le_bytes([n[5], n[4], n[3], n[2], n[1], unprefix!(6, n[0]), 0, 0]) + offset!(6) as u64,
+        7 => u64::from_le_bytes([n[6], n[5], n[4], n[3], n[2], n[1], unprefix!(7, n[0]), 0]) + offset!(7) as u64,
+        8 => u64::from_le_bytes([n[7], n[6], n[5], n[4], n[3], n[2], n[1], unprefix!(8, n[0])]) + offset!(8) as u64,
+        _ => u64::from_le_bytes([n[8], n[7], n[6], n[5], n[4], n[3], n[2], n[1]]) + offset!(9) as u64,
+    }
+}
+
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Vu64([u8; 9]);
+
+#[allow(clippy::len_without_is_empty)]
+impl Vu64 {
+    #[inline(always)]
+    pub fn len(&self) -> u8 {
+        decode_len_vu64(self.0[0])
+    }
+}
+
+impl std::ops::Deref for Vu64 {
+    type Target = [u8];
+
+    #[inline(always)]
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Vu64 {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            fmt,
+            "Vu64({})",
+            self.0
+                .iter()
+                .take(self.len() as usize)
+                .map(|x| format!("{:08b}", x))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    }
+}
+
+impl std::fmt::Debug for Vu64 {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            fmt,
+            "Vu64(0b{})",
+            self.0
+                .iter()
+                .take(self.len() as usize)
+                .map(|x| format!("{:08b}", x))
+                .collect::<Vec<_>>()
+                .join("_")
+        )
+    }
+}
+
+pub trait ReadVu64Ext<T> {
+    /// Read a variable-length `u64`.
+    fn read_vu64(&mut self) -> std::io::Result<T>;
+}
+
+pub trait WriteVu64Ext<T> {
+    /// Write a variable-length `u64`.
+    fn write_vu64(&mut self, n: T) -> std::io::Result<()>;
+}
+
+impl<R: ::std::io::Read> ReadVu64Ext<u64> for R {
+    fn read_vu64(&mut self) -> std::io::Result<u64> {
+        let mut buf: [u8; 9] = [0; 9];
+        self.read_exact(&mut buf[0..1])?;
+
+        let len = decode_len_vu64(buf[0]);
+        if len != 1 {
+            self.read_exact(&mut buf[1..len as usize])?;
+        }
+
+        let vlq = Vu64(buf);
+        Ok(decode_vu64(vlq))
+    }
+}
+
+impl<W: ::std::io::Write> WriteVu64Ext<u64> for W {
+    fn write_vu64(&mut self, n: u64) -> std::io::Result<()> {
+        let vlq = encode_vu64(n);
+        self.write_all(&vlq.0[0..vlq.len() as usize])
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
-    fn roundtrip<T: Vlq>(value: T) -> T {
-        let mut buf = vec![];
-        buf.write_vlq(value).expect("successful write");
-        Cursor::new(buf).read_vlq().expect("successful read")
+    #[test]
+    fn check_decode() {
+        assert_eq!(decode_len_vu64(0b1111_1111), 1, "max for 1");
+        assert_eq!(decode_len_vu64(0b1000_0000), 1, "min for 1");
+        assert_eq!(decode_len_vu64(0b0111_1111), 2, "max for 2");
+        assert_eq!(decode_len_vu64(0b0100_0000), 2, "min for 2");
+        assert_eq!(decode_len_vu64(0b0011_1111), 3, "max for 3");
+        assert_eq!(decode_len_vu64(0b0010_0000), 3, "min for 3");
+        assert_eq!(decode_len_vu64(0b0001_1111), 4, "max for 4");
+        assert_eq!(decode_len_vu64(0b0001_0000), 4, "min for 4");
+        assert_eq!(decode_len_vu64(0b0000_1111), 5, "max for 5");
+        assert_eq!(decode_len_vu64(0b0000_1000), 5, "min for 5");
+        assert_eq!(decode_len_vu64(0b0000_0111), 6, "max for 6");
+        assert_eq!(decode_len_vu64(0b0000_0100), 6, "min for 6");
+        assert_eq!(decode_len_vu64(0b0000_0011), 7, "max for 7");
+        assert_eq!(decode_len_vu64(0b0000_0010), 7, "min for 7");
+        assert_eq!(decode_len_vu64(0b0000_0001), 8, "min/max for 8");
+        assert_eq!(decode_len_vu64(0b0000_0000), 9, "min/max for 9");
     }
 
     #[test]
-    fn test_smoke() {
-        assert_eq!(std::u8::MAX, roundtrip(std::u8::MAX));
-        assert_eq!(std::u8::MIN, roundtrip(std::u8::MIN));
-        assert_eq!(0u8, roundtrip(0u8));
+    fn round_trip() {
+        assert_eq!(decode_vu64(encode_vu64(std::u64::MIN)), std::u64::MIN);
+        assert_eq!(decode_vu64(encode_vu64(0x7F)), 0x7F, "max for 1");
+        assert_eq!(decode_vu64(encode_vu64(0x80)), 0x80, "min for 2");
+        assert_eq!(decode_vu64(encode_vu64(0x3FFF)), 0x3FFF, "max for 2");
+        assert_eq!(decode_vu64(encode_vu64(0x4000)), 0x4000, "min for 3");
+        assert_eq!(decode_vu64(encode_vu64(0x0F_FFFF)), 0x0F_FFFF, "max for 3");
+        assert_eq!(decode_vu64(encode_vu64(0x20_0000)), 0x20_0000, "min for 4");
+        assert_eq!(decode_vu64(encode_vu64(0x1FFF_FFFF)), 0x1FFF_FFFF, "max for 4");
+        assert_eq!(decode_vu64(encode_vu64(0x2000_0000)), 0x2000_0000, "min for 5");
+        assert_eq!(decode_vu64(encode_vu64(0x17_FFFF_FFFF)), 0x17_FFFF_FFFF, "max for 5");
+        assert_eq!(decode_vu64(encode_vu64(0x18_0000_0000)), 0x18_0000_0000, "min for 6");
+        assert_eq!(
+            decode_vu64(encode_vu64(0x13FF_FFFF_FFFF)),
+            0x13FF_FFFF_FFFF,
+            "max for 6"
+        );
+        assert_eq!(
+            decode_vu64(encode_vu64(0x1411_1111_1111)),
+            0x1411_1111_1111,
+            "min for 7"
+        );
+        assert_eq!(
+            decode_vu64(encode_vu64(0x10_FFFF_FFFF_FFFF)),
+            0x10_FFFF_FFFF_FFFF,
+            "max for 7"
+        );
+        assert_eq!(
+            decode_vu64(encode_vu64(0x12_1111_1111_1111)),
+            0x12_1111_1111_1111,
+            "min for 8"
+        );
+        assert_eq!(
+            decode_vu64(encode_vu64(0x11FF_FFFF_FFFF_FFFF)),
+            0x11FF_FFFF_FFFF_FFFF,
+            "max for 8"
+        );
+        assert_eq!(
+            decode_vu64(encode_vu64(0x1011_1111_1111_1111)),
+            0x1011_1111_1111_1111,
+            "min for 9"
+        );
+        assert_eq!(decode_vu64(encode_vu64(std::u64::MAX)), std::u64::MAX);
+        assert_eq!(decode_vu64(encode_vu64(std::i64::MIN as u64)) as i64, std::i64::MIN);
 
-        assert_eq!(std::i8::MAX, roundtrip(std::i8::MAX));
-        assert_eq!(std::i8::MIN, roundtrip(std::i8::MIN));
-        assert_eq!(0i8, roundtrip(0i8));
-        assert_eq!(-1i8, roundtrip(-1i8));
-
-        assert_eq!(std::u16::MAX, roundtrip(std::u16::MAX));
-        assert_eq!(std::u16::MIN, roundtrip(std::u16::MIN));
-        assert_eq!(0u16, roundtrip(0u16));
-
-        assert_eq!(std::i16::MAX, roundtrip(std::i16::MAX));
-        assert_eq!(std::i16::MIN, roundtrip(std::i16::MIN));
-        assert_eq!(0i16, roundtrip(0i16));
-        assert_eq!(-1i16, roundtrip(-1i16));
-
-        assert_eq!(std::u32::MAX, roundtrip(std::u32::MAX));
-        assert_eq!(std::u32::MIN, roundtrip(std::u32::MIN));
-        assert_eq!(0u32, roundtrip(0u32));
-
-        assert_eq!(std::i32::MAX, roundtrip(std::i32::MAX));
-        assert_eq!(std::i32::MIN, roundtrip(std::i32::MIN));
-        assert_eq!(0i32, roundtrip(0i32));
-        assert_eq!(-1i32, roundtrip(-1i32));
-
-        assert_eq!(std::u64::MAX, roundtrip(std::u64::MAX));
-        assert_eq!(std::u64::MIN, roundtrip(std::u64::MIN));
-        assert_eq!(0u64, roundtrip(0u64));
-
-        assert_eq!(std::i64::MAX, roundtrip(std::i64::MAX));
-        assert_eq!(std::i64::MIN, roundtrip(std::i64::MIN));
-        assert_eq!(0i64, roundtrip(0i64));
-        assert_eq!(-1i64, roundtrip(-1i64));
-
-        assert_eq!(std::u128::MAX, roundtrip(std::u128::MAX));
-        assert_eq!(std::u128::MIN, roundtrip(std::u128::MIN));
-        assert_eq!(0u128, roundtrip(0u128));
-
-        assert_eq!(std::i128::MAX, roundtrip(std::i128::MAX));
-        assert_eq!(std::i128::MIN, roundtrip(std::i128::MIN));
-        assert_eq!(0i128, roundtrip(0i128));
-        assert_eq!(-1i128, roundtrip(-1i128));
-    }
-
-    #[test]
-    fn read_write() {
-        let mut data = std::io::Cursor::new(vec![]);
-        data.write_vlq(std::u64::MAX).unwrap();
-        data.set_position(0);
-
-        let x: u64 = data.read_vlq().unwrap();
-        assert_eq!(x, std::u64::MAX);
-
-        let mut data = std::io::Cursor::new(vec![]);
-        data.write_vlq(std::i64::MIN).unwrap();
-        data.set_position(0);
-
-        let x: i64 = data.read_vlq().unwrap();
-        assert_eq!(x, std::i64::MIN);
+        assert_eq!(1, decode_vu64(encode_vu64(0x1)), "1");
+        assert_eq!(0, decode_vu64(encode_vu64(0x0)), "0");
+        assert_eq!(0x011, decode_vu64(encode_vu64(0x011)), "2");
+        assert_eq!(0xFF221122, decode_vu64(encode_vu64(0xFF221122)), "3");
+        assert_eq!(
+            0x11FF_FFFF_FFFF_FFFF,
+            decode_vu64(encode_vu64(0x11FF_FFFF_FFFF_FFFF)),
+            "4"
+        );
+        assert_eq!(
+            0x1011_1111_1111_1111,
+            decode_vu64(encode_vu64(0x1011_1111_1111_1111)),
+            "5"
+        );
+        assert_eq!(std::u64::MAX, decode_vu64(encode_vu64(std::u64::MAX)), "max");
     }
 }

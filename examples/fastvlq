@@ -1,5 +1,3 @@
-use vlq_rust::fast;
-
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
 
@@ -11,6 +9,6 @@ fn main() {
         }
     };
 
-    let v = fast::encode(n);
+    let v = fastvlq::encode(n);
     println!("{:?}", v);
 }
