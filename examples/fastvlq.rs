@@ -9,6 +9,6 @@ fn main() {
         }
     };
 
-    let v = fastvlq::encode(n);
+    let v = fastvlq::encode_vu64(n);
     println!("{:?}", v);
 }

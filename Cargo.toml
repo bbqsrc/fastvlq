@@ -1,12 +1,17 @@
 [package]
 name = "fastvlq"
-description = "A variant of Variable-Length Quantity with a focus on speed and no_std support."
+description = "A fast variant of Variable-Length Quantity with a focus on speed and no_std support."
 documentation = "https://docs.rs/fastvlq"
 repository = "https://github.com/bbqsrc/fastvlq"
 version = "1.0.0-alpha.1"
 authors = ["Brendan Molloy <brendan@bbqsrc.net>"]
+categories = ["algorithms", "compression", "encoding", "no-std"]
 edition = "2018"
 license = "Apache-2.0 OR MIT"
 
 [dev-dependencies]
 rand = "0.7"
+
+[features]
+default = ["std"]
+std = []

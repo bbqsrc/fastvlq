@@ -18,7 +18,10 @@
 //! fastvlq = "1"
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::cast_lossless)]
+
+extern crate core;
 
 macro_rules! prefix {
     (1) => { 0b1000_0000 };
@@ -175,7 +178,7 @@ pub fn encode_vu64(n: u64) -> Vu64 {
 #[inline(always)]
 pub fn decode_vu64(n: Vu64) -> u64 {
     let len = n.len();
-    let n = n;
+    let n = n.bytes();
 
     match len {
         1 => unprefix!(1, n[0] as u64),
@@ -200,58 +203,49 @@ impl Vu64 {
     pub fn len(&self) -> u8 {
         decode_len_vu64(self.0[0])
     }
-}
-
-impl std::ops::Deref for Vu64 {
-    type Target = [u8];
 
     #[inline(always)]
-    fn deref(&self) -> &[u8] {
-        &self.0
+    pub fn get(&self) -> u64 {
+        decode_vu64(*self)
+    }
+
+    #[inline(always)]
+    fn bytes(&self) -> [u8; 9] {
+        self.0
     }
 }
 
-impl std::fmt::Display for Vu64 {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            fmt,
-            "Vu64({})",
-            self.0
-                .iter()
-                .take(self.len() as usize)
-                .map(|x| format!("{:08b}", x))
-                .collect::<Vec<_>>()
-                .join(" ")
-        )
+impl core::fmt::Display for Vu64 {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.get(), f)
     }
 }
 
-impl std::fmt::Debug for Vu64 {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            fmt,
-            "Vu64(0b{})",
-            self.0
-                .iter()
-                .take(self.len() as usize)
-                .map(|x| format!("{:08b}", x))
-                .collect::<Vec<_>>()
-                .join("_")
-        )
+impl core::fmt::Debug for Vu64 {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let len = self.len() as usize - 1;
+        write!(f, "Vu64(0b")?;
+        for x in self.0.iter().take(len) {
+            f.write_fmt(core::format_args!("{:08b}_", x))?;
+        }
+        f.write_fmt(core::format_args!("{:08b})", self.0[len]))
     }
 }
 
+#[cfg(feature = "std")]
 pub trait ReadVu64Ext<T> {
     /// Read a variable-length `u64`.
     fn read_vu64(&mut self) -> std::io::Result<T>;
 }
 
+#[cfg(feature = "std")]
 pub trait WriteVu64Ext<T> {
     /// Write a variable-length `u64`.
     fn write_vu64(&mut self, n: T) -> std::io::Result<()>;
 }
 
-impl<R: ::std::io::Read> ReadVu64Ext<u64> for R {
+#[cfg(feature = "std")]
+impl<R: std::io::Read> ReadVu64Ext<u64> for R {
     fn read_vu64(&mut self) -> std::io::Result<u64> {
         let mut buf: [u8; 9] = [0; 9];
         self.read_exact(&mut buf[0..1])?;
@@ -266,7 +260,8 @@ impl<R: ::std::io::Read> ReadVu64Ext<u64> for R {
     }
 }
 
-impl<W: ::std::io::Write> WriteVu64Ext<u64> for W {
+#[cfg(feature = "std")]
+impl<W: std::io::Write> WriteVu64Ext<u64> for W {
     fn write_vu64(&mut self, n: u64) -> std::io::Result<()> {
         let vlq = encode_vu64(n);
         self.write_all(&vlq.0[0..vlq.len() as usize])
@@ -299,7 +294,7 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        assert_eq!(decode_vu64(encode_vu64(std::u64::MIN)), std::u64::MIN);
+        assert_eq!(decode_vu64(encode_vu64(core::u64::MIN)), core::u64::MIN);
         assert_eq!(decode_vu64(encode_vu64(0x7F)), 0x7F, "max for 1");
         assert_eq!(decode_vu64(encode_vu64(0x80)), 0x80, "min for 2");
         assert_eq!(decode_vu64(encode_vu64(0x3FFF)), 0x3FFF, "max for 2");
@@ -340,8 +335,8 @@ mod tests {
             0x1011_1111_1111_1111,
             "min for 9"
         );
-        assert_eq!(decode_vu64(encode_vu64(std::u64::MAX)), std::u64::MAX);
-        assert_eq!(decode_vu64(encode_vu64(std::i64::MIN as u64)) as i64, std::i64::MIN);
+        assert_eq!(decode_vu64(encode_vu64(core::u64::MAX)), core::u64::MAX);
+        assert_eq!(decode_vu64(encode_vu64(core::i64::MIN as u64)) as i64, core::i64::MIN);
 
         assert_eq!(1, decode_vu64(encode_vu64(0x1)), "1");
         assert_eq!(0, decode_vu64(encode_vu64(0x0)), "0");
@@ -357,6 +352,6 @@ mod tests {
             decode_vu64(encode_vu64(0x1011_1111_1111_1111)),
             "5"
         );
-        assert_eq!(std::u64::MAX, decode_vu64(encode_vu64(std::u64::MAX)), "max");
+        assert_eq!(core::u64::MAX, decode_vu64(encode_vu64(core::u64::MAX)), "max");
     }
 }

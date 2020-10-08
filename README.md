@@ -1,7 +1,7 @@
-# vlq
+# fastvlq
 
-[![Actions Status](https://github.com/bbqsrc/vlq-rust/workflows/Continuous%20Integration/badge.svg)](https://github.com/bbqsrc/vlq-rust/actions)
-[![Documentation](https://docs.rs/vlq-rust/badge.svg)](https://docs.rs/vlq-rust)
+[![Actions Status](https://github.com/bbqsrc/fastvlq/workflows/CI/badge.svg)](https://github.com/bbqsrc/fastvlq/actions)
+[![Documentation](https://docs.rs/fastvlq/badge.svg)](https://docs.rs/fastvlq)
 
 Encode and decode [variable-length quantity](https://en.wikipedia.org/wiki/Variable-length_quantity) data.
 
@@ -11,7 +11,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-vlq = { package = "vlq-rust", version = "0.2" }
+fastvlq = "1"
 ```
 
 ## Where is this used?
