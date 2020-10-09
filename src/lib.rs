@@ -518,3 +518,16 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn roundtrip(x: u64) {
+            prop_assert_eq!(u64::from(Vu64::from(x)), x);
+        }
+    }
+}
