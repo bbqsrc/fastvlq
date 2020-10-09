@@ -20,6 +20,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::cast_lossless)]
+#![deny(missing_docs)]
 
 extern crate core;
 
@@ -219,6 +220,7 @@ macro_rules! copy_from_slice_offset {
     };
 }
 
+/// Encode a u64 in value-length quantity encoding.
 #[inline(always)]
 pub const fn encode_vu64(n: u64) -> Vu64 {
     let len = encode_len_vu64(n);
@@ -277,6 +279,7 @@ pub const fn encode_vu64(n: u64) -> Vu64 {
     Vu64(out_buf)
 }
 
+/// Decode a given VLQ instance back into a native u64.
 #[inline(always)]
 pub const fn decode_vu64(n: Vu64) -> u64 {
     let len = n.len();
@@ -316,27 +319,32 @@ pub const fn decode_vu64(n: Vu64) -> u64 {
 
 const VU64_BUF_SIZE: usize = 9;
 
+/// An unsigned 64-bit integer in value-length quantity encoding.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Vu64([u8; VU64_BUF_SIZE]);
 
 #[allow(clippy::len_without_is_empty)]
 impl Vu64 {
+    /// Construct a new VLQ instance from the given `u64`.
     #[inline(always)]
     pub const fn new(value: u64) -> Vu64 {
         encode_vu64(value)
     }
 
+    /// Length of the internal representation
     #[inline(always)]
     pub const fn len(&self) -> u8 {
         decode_len_vu64(self.0[0])
     }
 
+    /// Retrieve the stored number as `u64`.
     #[inline(always)]
     pub const fn get(&self) -> u64 {
         decode_vu64(*self)
     }
 
+    /// Get the raw byte representation of the VLQ instance
     #[inline(always)]
     pub const fn bytes(&self) -> [u8; 9] {
         self.0
@@ -372,12 +380,14 @@ impl core::fmt::Debug for Vu64 {
     }
 }
 
+/// Extension trait to support reading bytes from standard reader interface as VLQ.
 #[cfg(feature = "std")]
 pub trait ReadVu64Ext<T> {
     /// Read a variable-length `u64`.
     fn read_vu64(&mut self) -> std::io::Result<T>;
 }
 
+/// Extension trait to support writing VLQ to standard writer interface.
 #[cfg(feature = "std")]
 pub trait WriteVu64Ext<T> {
     /// Write a variable-length `u64`.
