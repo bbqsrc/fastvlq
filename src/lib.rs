@@ -1,7 +1,7 @@
 //! ## Algorithm
 //!
 //! Fast VLQ is a variant of value-length quantity encoding, with a focus on encoding and
-//! decoding speed. The total number of bytes an always be derived from the very first byte,
+//! decoding speed. The total number of bytes can always be derived from the very first byte,
 //! and unlike VLQ, the integer type supported is `u64` exclusively, and will
 //! take up a maximum of 9 bytes (for values greater than 56-bit).
 //!
