@@ -10,6 +10,7 @@ edition = "2018"
 license = "Apache-2.0 OR MIT"
 
 [dev-dependencies]
+proptest = "0.10.1"
 rand = "0.7"
 
 [features]
