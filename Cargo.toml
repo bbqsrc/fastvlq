@@ -3,11 +3,14 @@ name = "fastvlq"
 description = "A fast variant of Variable-Length Quantity with a focus on speed and no_std support."
 documentation = "https://docs.rs/fastvlq"
 repository = "https://github.com/bbqsrc/fastvlq"
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 authors = ["Brendan Molloy <brendan@bbqsrc.net>"]
 categories = ["algorithms", "compression", "encoding", "no-std"]
 edition = "2018"
 license = "Apache-2.0 OR MIT"
+
+[dependencies]
+bare-io = { git = "https://github.com/bbqsrc/bare-io", branch = "main", optional = true, default-features = false }
 
 [dev-dependencies]
 proptest = "0.10.1"
@@ -16,3 +19,5 @@ rand = "0.7"
 [features]
 default = ["std"]
 std = []
+nightly = ["bare-io"]
+nightly-std = ["std", "bare-io/std"]
