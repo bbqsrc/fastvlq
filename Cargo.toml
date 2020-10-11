@@ -10,7 +10,7 @@ edition = "2018"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
-bare-io = { git = "https://github.com/bbqsrc/bare-io", branch = "main", optional = true, default-features = false }
+bare-io = { version = "0.2", optional = true, default-features = false }
 
 [dev-dependencies]
 proptest = "0.10.1"
