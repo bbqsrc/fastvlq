@@ -1,16 +1,14 @@
 name: CI
-on:
-  push:
-  pull_request:
+on: [push, pull_request]
 
 jobs:
-  test:
+  test-nightly:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        rust: [stable, beta, nightly]
+        rust: [nightly]
     steps:
       - uses: actions/checkout@v2
       - name: Install Rust toolchain
@@ -18,13 +16,36 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
           override: true
-      - name: Run tests (std)
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features
       - name: Run tests (no_std)
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --no-default-features
+          args: --tests --features nightly
+      - name: Run tests (std)
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --tests --features std-nightly
+  test-stable:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable]
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          override: true
+      - name: Run tests (no_std)
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+      - name: Run tests (std)
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features std
