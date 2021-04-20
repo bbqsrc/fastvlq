@@ -3,7 +3,9 @@
 [![Actions Status](https://github.com/bbqsrc/fastvlq/workflows/CI/badge.svg)](https://github.com/bbqsrc/fastvlq/actions)
 [![Documentation](https://docs.rs/fastvlq/badge.svg)](https://docs.rs/fastvlq)
 
-Encode and decode [variable-length quantity](https://en.wikipedia.org/wiki/Variable-length_quantity) data.
+Encode and decode with a variant of [variable-length quantity](https://en.wikipedia.org/wiki/Variable-length_quantity) data.
+
+The algorithm uses leading zeros to count how many bytes are required for decoding.
 
 ## Usage
 

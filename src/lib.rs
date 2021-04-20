@@ -22,13 +22,10 @@
 #![allow(clippy::cast_lossless)]
 #![deny(missing_docs)]
 
-#[cfg(feature = "std")]
-use std::io::{Read, Result as IoResult, Write};
-
-#[cfg(all(feature = "nightly", not(feature = "std")))]
-use bare_io::{Read, Result as IoResult, Write};
-
 extern crate core;
+
+use core::fmt::{Debug, Display};
+use core2::io::{Read, Result as IoResult, Write};
 
 macro_rules! prefix {
     (1) => {
@@ -369,13 +366,13 @@ impl From<Vu64> for u64 {
     }
 }
 
-impl core::fmt::Display for Vu64 {
+impl Display for Vu64 {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        core::fmt::Display::fmt(&self.get(), f)
+        Display::fmt(&self.get(), f)
     }
 }
 
-impl core::fmt::Debug for Vu64 {
+impl Debug for Vu64 {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         let len = self.len() as usize - 1;
         write!(f, "Vu64(0b")?;
@@ -387,20 +384,17 @@ impl core::fmt::Debug for Vu64 {
 }
 
 /// Extension trait to support reading bytes from standard reader interface as VLQ.
-#[cfg(any(all(feature = "nightly", not(feature = "std")), feature = "std"))]
 pub trait ReadVu64Ext<T> {
     /// Read a variable-length `u64`.
     fn read_vu64(&mut self) -> IoResult<T>;
 }
 
 /// Extension trait to support writing VLQ to standard writer interface.
-#[cfg(any(all(feature = "nightly", not(feature = "std")), feature = "std"))]
 pub trait WriteVu64Ext<T> {
     /// Write a variable-length `u64`.
     fn write_vu64(&mut self, n: T) -> IoResult<()>;
 }
 
-#[cfg(any(all(feature = "nightly", not(feature = "std")), feature = "std"))]
 impl<R: Read> ReadVu64Ext<u64> for R {
     fn read_vu64(&mut self) -> IoResult<u64> {
         let mut buf: [u8; 9] = [0; 9];
@@ -416,7 +410,6 @@ impl<R: Read> ReadVu64Ext<u64> for R {
     }
 }
 
-#[cfg(any(all(feature = "nightly", not(feature = "std")), feature = "std"))]
 impl<W: Write> WriteVu64Ext<u64> for W {
     fn write_vu64(&mut self, n: u64) -> IoResult<()> {
         let vlq = encode_vu64(n);
