@@ -352,6 +352,12 @@ impl Vu64 {
     pub const fn bytes(&self) -> [u8; 9] {
         self.0
     }
+
+    /// Get the serialized representation of the VLQ as a slice.
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0[..(self.len() as usize)]
+    }
 }
 
 impl From<u64> for Vu64 {
@@ -413,7 +419,7 @@ impl<R: Read> ReadVu64Ext<u64> for R {
 impl<W: Write> WriteVu64Ext<u64> for W {
     fn write_vu64(&mut self, n: u64) -> IoResult<()> {
         let vlq = encode_vu64(n);
-        self.write_all(&vlq.0[0..vlq.len() as usize])
+        self.write_all(vlq.as_slice())
     }
 }
 
