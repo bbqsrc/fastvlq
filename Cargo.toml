@@ -10,7 +10,7 @@ edition = "2018"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
-core2 = { version = "0.3.0-alpha.1", default-features = false }
+core2 = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 proptest = "0.10.1"
