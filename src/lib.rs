@@ -27,6 +27,13 @@ use core::fmt::{Debug, Display};
 #[cfg(feature = "std")]
 use std::io::{Read, Result as IoResult, Write};
 
+#[cfg(feature = "async")]
+use core::future::Future;
+#[cfg(feature = "async")]
+use futures_io::{AsyncRead, AsyncWrite};
+#[cfg(feature = "async")]
+use futures_util::{AsyncReadExt, AsyncWriteExt};
+
 macro_rules! prefix {
     (1) => {
         0b1000_0000
@@ -191,13 +198,13 @@ const fn decode_len_vu64(n: u8) -> u8 {
 ///
 /// 1: 7 bits
 /// 2: 14 (6 + 8) bits
-/// 3: 20 (5 + 8 * 2) bits
+/// 3: 21 (5 + 8 * 2) bits
 /// 4: 28 (4 + 8 * 3) bits
 /// 5: 35 (3 + 8 * 4) bits
 /// 6: 42 (2 + 8 * 5) bits
-/// 7: 49 (0 + 8 * 6) bits
-/// 8: 56 (1 + 8 * 7) bits
-/// 9: 64 (1 + 8 * 8) bits
+/// 7: 49 (1 + 8 * 6) bits
+/// 8: 56 (0 + 8 * 7) bits
+/// 9: 64 (0 + 8 * 8) bits
 #[inline(always)]
 const fn encode_len_vu64(n: u64) -> u8 {
     match n {
@@ -225,6 +232,7 @@ macro_rules! copy_from_slice_offset {
 
 /// Encode a u64 in value-length quantity encoding.
 #[inline(always)]
+#[must_use]
 pub const fn encode_vu64(n: u64) -> Vu64 {
     let len = encode_len_vu64(n);
     let mut out_buf = [0u8; VU64_BUF_SIZE];
@@ -331,6 +339,7 @@ pub struct Vu64([u8; VU64_BUF_SIZE]);
 impl Vu64 {
     /// Construct a new VLQ instance from the given `u64`.
     #[inline(always)]
+    #[must_use]
     pub const fn new(value: u64) -> Vu64 {
         encode_vu64(value)
     }
@@ -427,6 +436,44 @@ impl<W: Write> WriteVu64Ext<u64> for W {
     }
 }
 
+#[cfg(feature = "async")]
+/// Extension trait to support reading bytes from async reader interface as VLQ.
+pub trait AsyncReadVu64Ext {
+    /// Read a variable-length `u64` asynchronously.
+    fn read_vu64(&mut self) -> impl Future<Output = std::io::Result<u64>>;
+}
+
+#[cfg(feature = "async")]
+impl<R: AsyncRead + Unpin> AsyncReadVu64Ext for R {
+    async fn read_vu64(&mut self) -> std::io::Result<u64> {
+        let mut buf: [u8; 9] = [0; 9];
+        self.read_exact(&mut buf[0..1]).await?;
+
+        let len = decode_len_vu64(buf[0]);
+        if len != 1 {
+            self.read_exact(&mut buf[1..len as usize]).await?;
+        }
+
+        let vlq = Vu64(buf);
+        Ok(decode_vu64(vlq))
+    }
+}
+
+#[cfg(feature = "async")]
+/// Extension trait to support writing VLQ to async writer interface.
+pub trait AsyncWriteVu64Ext {
+    /// Write a variable-length `u64` asynchronously.
+    fn write_vu64(&mut self, n: u64) -> impl Future<Output = std::io::Result<()>>;
+}
+
+#[cfg(feature = "async")]
+impl<W: AsyncWrite + Unpin> AsyncWriteVu64Ext for W {
+    async fn write_vu64(&mut self, n: u64) -> std::io::Result<()> {
+        let vlq = encode_vu64(n);
+        self.write_all(vlq.as_slice()).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,62 +501,88 @@ mod tests {
     #[test]
     fn round_trip() {
         assert_eq!(decode_vu64(encode_vu64(core::u64::MIN)), core::u64::MIN);
+        // 1-byte: 0x00 to 0x7F
+        assert_eq!(encode_vu64(0x7F).len(), 1);
         assert_eq!(decode_vu64(encode_vu64(0x7F)), 0x7F, "max for 1");
+        // 2-byte: 0x80 to 0x407F
+        assert_eq!(encode_vu64(0x80).len(), 2);
         assert_eq!(decode_vu64(encode_vu64(0x80)), 0x80, "min for 2");
-        assert_eq!(decode_vu64(encode_vu64(0x3FFF)), 0x3FFF, "max for 2");
-        assert_eq!(decode_vu64(encode_vu64(0x4000)), 0x4000, "min for 3");
-        assert_eq!(decode_vu64(encode_vu64(0x0F_FFFF)), 0x0F_FFFF, "max for 3");
-        assert_eq!(decode_vu64(encode_vu64(0x20_0000)), 0x20_0000, "min for 4");
+        assert_eq!(encode_vu64(0x407F).len(), 2);
+        assert_eq!(decode_vu64(encode_vu64(0x407F)), 0x407F, "max for 2");
+        // 3-byte: 0x4080 to 0x20_407F
+        assert_eq!(encode_vu64(0x4080).len(), 3);
+        assert_eq!(decode_vu64(encode_vu64(0x4080)), 0x4080, "min for 3");
+        assert_eq!(encode_vu64(0x20_407F).len(), 3);
+        assert_eq!(decode_vu64(encode_vu64(0x20_407F)), 0x20_407F, "max for 3");
+        // 4-byte: 0x20_4080 to 0x1020_407F
+        assert_eq!(encode_vu64(0x20_4080).len(), 4);
+        assert_eq!(decode_vu64(encode_vu64(0x20_4080)), 0x20_4080, "min for 4");
+        assert_eq!(encode_vu64(0x1020_407F).len(), 4);
         assert_eq!(
-            decode_vu64(encode_vu64(0x1FFF_FFFF)),
-            0x1FFF_FFFF,
+            decode_vu64(encode_vu64(0x1020_407F)),
+            0x1020_407F,
             "max for 4"
         );
+        // 5-byte: 0x1020_4080 to 0x8_1020_407F
+        assert_eq!(encode_vu64(0x1020_4080).len(), 5);
         assert_eq!(
-            decode_vu64(encode_vu64(0x2000_0000)),
-            0x2000_0000,
+            decode_vu64(encode_vu64(0x1020_4080)),
+            0x1020_4080,
             "min for 5"
         );
+        assert_eq!(encode_vu64(0x8_1020_407F).len(), 5);
         assert_eq!(
-            decode_vu64(encode_vu64(0x17_FFFF_FFFF)),
-            0x17_FFFF_FFFF,
+            decode_vu64(encode_vu64(0x8_1020_407F)),
+            0x8_1020_407F,
             "max for 5"
         );
+        // 6-byte: 0x8_1020_4080 to 0x408_1020_407F
+        assert_eq!(encode_vu64(0x8_1020_4080).len(), 6);
         assert_eq!(
-            decode_vu64(encode_vu64(0x18_0000_0000)),
-            0x18_0000_0000,
+            decode_vu64(encode_vu64(0x8_1020_4080)),
+            0x8_1020_4080,
             "min for 6"
         );
+        assert_eq!(encode_vu64(0x408_1020_407F).len(), 6);
         assert_eq!(
-            decode_vu64(encode_vu64(0x13FF_FFFF_FFFF)),
-            0x13FF_FFFF_FFFF,
+            decode_vu64(encode_vu64(0x408_1020_407F)),
+            0x408_1020_407F,
             "max for 6"
         );
+        // 7-byte: 0x408_1020_4080 to 0x2_0408_1020_407F
+        assert_eq!(encode_vu64(0x408_1020_4080).len(), 7);
         assert_eq!(
-            decode_vu64(encode_vu64(0x1411_1111_1111)),
-            0x1411_1111_1111,
+            decode_vu64(encode_vu64(0x408_1020_4080)),
+            0x408_1020_4080,
             "min for 7"
         );
+        assert_eq!(encode_vu64(0x2_0408_1020_407F).len(), 7);
         assert_eq!(
-            decode_vu64(encode_vu64(0x10_FFFF_FFFF_FFFF)),
-            0x10_FFFF_FFFF_FFFF,
+            decode_vu64(encode_vu64(0x2_0408_1020_407F)),
+            0x2_0408_1020_407F,
             "max for 7"
         );
+        // 8-byte: 0x2_0408_1020_4080 to 0x102_0408_1020_407F
+        assert_eq!(encode_vu64(0x2_0408_1020_4080).len(), 8);
         assert_eq!(
-            decode_vu64(encode_vu64(0x12_1111_1111_1111)),
-            0x12_1111_1111_1111,
+            decode_vu64(encode_vu64(0x2_0408_1020_4080)),
+            0x2_0408_1020_4080,
             "min for 8"
         );
+        assert_eq!(encode_vu64(0x102_0408_1020_407F).len(), 8);
         assert_eq!(
-            decode_vu64(encode_vu64(0x11FF_FFFF_FFFF_FFFF)),
-            0x11FF_FFFF_FFFF_FFFF,
+            decode_vu64(encode_vu64(0x102_0408_1020_407F)),
+            0x102_0408_1020_407F,
             "max for 8"
         );
+        // 9-byte: 0x102_0408_1020_4080 to u64::MAX
+        assert_eq!(encode_vu64(0x102_0408_1020_4080).len(), 9);
         assert_eq!(
-            decode_vu64(encode_vu64(0x1011_1111_1111_1111)),
-            0x1011_1111_1111_1111,
+            decode_vu64(encode_vu64(0x102_0408_1020_4080)),
+            0x102_0408_1020_4080,
             "min for 9"
         );
+        assert_eq!(encode_vu64(core::u64::MAX).len(), 9);
         assert_eq!(decode_vu64(encode_vu64(core::u64::MAX)), core::u64::MAX);
         assert_eq!(
             decode_vu64(encode_vu64(core::i64::MIN as u64)) as i64,

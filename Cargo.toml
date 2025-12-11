@@ -9,6 +9,10 @@ categories = ["algorithms", "compression", "encoding", "no-std"]
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 
+[dependencies]
+futures-io = { version = "0.3", optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["io"], optional = true }
+
 [dev-dependencies]
 proptest = "1.9"
 rand = "0.9"
@@ -16,3 +20,4 @@ rand = "0.9"
 [features]
 default = ["std"]
 std = []
+async = ["futures-io", "futures-util"]
