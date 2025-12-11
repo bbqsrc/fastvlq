@@ -22,10 +22,10 @@
 #![allow(clippy::cast_lossless)]
 #![deny(missing_docs)]
 
-extern crate core;
-
 use core::fmt::{Debug, Display};
-use core2::io::{Read, Result as IoResult, Write};
+
+#[cfg(feature = "std")]
+use std::io::{Read, Result as IoResult, Write};
 
 macro_rules! prefix {
     (1) => {
@@ -389,18 +389,21 @@ impl Debug for Vu64 {
     }
 }
 
+#[cfg(feature = "std")]
 /// Extension trait to support reading bytes from standard reader interface as VLQ.
 pub trait ReadVu64Ext<T> {
     /// Read a variable-length `u64`.
     fn read_vu64(&mut self) -> IoResult<T>;
 }
 
+#[cfg(feature = "std")]
 /// Extension trait to support writing VLQ to standard writer interface.
 pub trait WriteVu64Ext<T> {
     /// Write a variable-length `u64`.
     fn write_vu64(&mut self, n: T) -> IoResult<()>;
 }
 
+#[cfg(feature = "std")]
 impl<R: Read> ReadVu64Ext<u64> for R {
     fn read_vu64(&mut self) -> IoResult<u64> {
         let mut buf: [u8; 9] = [0; 9];
@@ -416,6 +419,7 @@ impl<R: Read> ReadVu64Ext<u64> for R {
     }
 }
 
+#[cfg(feature = "std")]
 impl<W: Write> WriteVu64Ext<u64> for W {
     fn write_vu64(&mut self, n: u64) -> IoResult<()> {
         let vlq = encode_vu64(n);
