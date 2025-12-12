@@ -1,44 +1,13 @@
-//! Async VLQ traits for futures-io.
+//! Async VLQ trait implementations for futures-io.
 
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::{AsyncReadExt, AsyncWriteExt};
 
+use crate::ext::{AsyncReadVlqExt, AsyncWriteVlqExt};
 use crate::{decode_vu32, decode_vu64, decode_vu128, encode_vu32, encode_vu64, encode_vu128};
 use crate::{vi32, vi64, vi128, vu32, vu64, vu128};
 
-/// Extension trait for reading VLQ-encoded integers from a futures-io async reader.
-pub trait FuturesReadVlqExt {
-    /// Read a variable-length `u32` asynchronously.
-    fn read_vu32(&mut self) -> impl core::future::Future<Output = std::io::Result<u32>>;
-    /// Read a variable-length `i32` asynchronously.
-    fn read_vi32(&mut self) -> impl core::future::Future<Output = std::io::Result<i32>>;
-    /// Read a variable-length `u64` asynchronously.
-    fn read_vu64(&mut self) -> impl core::future::Future<Output = std::io::Result<u64>>;
-    /// Read a variable-length `i64` asynchronously.
-    fn read_vi64(&mut self) -> impl core::future::Future<Output = std::io::Result<i64>>;
-    /// Read a variable-length `u128` asynchronously.
-    fn read_vu128(&mut self) -> impl core::future::Future<Output = std::io::Result<u128>>;
-    /// Read a variable-length `i128` asynchronously.
-    fn read_vi128(&mut self) -> impl core::future::Future<Output = std::io::Result<i128>>;
-}
-
-/// Extension trait for writing VLQ-encoded integers to a futures-io async writer.
-pub trait FuturesWriteVlqExt {
-    /// Write a variable-length `u32` asynchronously.
-    fn write_vu32(&mut self, n: u32) -> impl core::future::Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `i32` asynchronously.
-    fn write_vi32(&mut self, n: i32) -> impl core::future::Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `u64` asynchronously.
-    fn write_vu64(&mut self, n: u64) -> impl core::future::Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `i64` asynchronously.
-    fn write_vi64(&mut self, n: i64) -> impl core::future::Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `u128` asynchronously.
-    fn write_vu128(&mut self, n: u128) -> impl core::future::Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `i128` asynchronously.
-    fn write_vi128(&mut self, n: i128) -> impl core::future::Future<Output = std::io::Result<()>>;
-}
-
-impl<R: AsyncRead + Unpin> FuturesReadVlqExt for R {
+impl<R: AsyncRead + Unpin> AsyncReadVlqExt for R {
     async fn read_vu32(&mut self) -> std::io::Result<u32> {
         let mut buf = [0u8; vu32::VU32_BUF_SIZE];
         AsyncReadExt::read_exact(self, &mut buf[0..1]).await?;
@@ -87,7 +56,7 @@ impl<R: AsyncRead + Unpin> FuturesReadVlqExt for R {
     }
 }
 
-impl<W: AsyncWrite + Unpin> FuturesWriteVlqExt for W {
+impl<W: AsyncWrite + Unpin> AsyncWriteVlqExt for W {
     async fn write_vu32(&mut self, n: u32) -> std::io::Result<()> {
         AsyncWriteExt::write_all(self, encode_vu32(n).as_slice()).await
     }
