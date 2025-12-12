@@ -2,7 +2,7 @@
 
 use core::fmt::{Debug, Display};
 
-use crate::vu128::{decode_vu128, encode_vu128, Vu128};
+use crate::vu128::{Vu128, decode_vu128, encode_vu128};
 
 #[inline(always)]
 pub(crate) const fn zigzag_encode_i128(n: i128) -> u128 {
@@ -88,9 +88,9 @@ impl Debug for Vi128 {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         let len = self.len() as usize - 1;
         write!(f, "Vi128(0b")?;
-        for x in self.0 .0.iter().take(len) {
+        for x in self.0.0.iter().take(len) {
             f.write_fmt(core::format_args!("{:08b}_", x))?;
         }
-        f.write_fmt(core::format_args!("{:08b})", self.0 .0[len]))
+        f.write_fmt(core::format_args!("{:08b})", self.0.0[len]))
     }
 }

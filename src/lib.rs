@@ -27,202 +27,13 @@
 #![allow(clippy::cast_lossless)]
 #![deny(missing_docs)]
 
-#[cfg(feature = "std")]
-use std::io::{Read, Result as IoResult, Write};
+#[cfg(feature = "async-futures")]
+mod futures;
+#[cfg(feature = "async-tokio")]
+mod tokio;
 
-#[cfg(feature = "async")]
-use core::future::Future;
-#[cfg(feature = "async")]
-use futures_io::{AsyncRead, AsyncWrite};
-#[cfg(feature = "async")]
-use futures_util::{AsyncReadExt, AsyncWriteExt};
-
-// ============================================================================
-// Internal macros (used by submodules)
-// ============================================================================
-
-macro_rules! prefix {
-    (1) => {
-        0b1000_0000
-    };
-    (2) => {
-        0b0100_0000
-    };
-    (3) => {
-        0b0010_0000
-    };
-    (4) => {
-        0b0001_0000
-    };
-    (5) => {
-        0b0000_1000
-    };
-    (6) => {
-        0b0000_0100
-    };
-    (7) => {
-        0b0000_0010
-    };
-    (8) => {
-        0b0000_0001
-    };
-    (9) => {
-        0b0000_0000
-    };
-    (1, $target:expr) => {
-        $target | 0b1000_0000
-    };
-    (2, $target:expr) => {
-        (0b0011_1111 & $target) | 0b0100_0000
-    };
-    (3, $target:expr) => {
-        (0b0001_1111 & $target) | 0b0010_0000
-    };
-    (4, $target:expr) => {
-        (0b0000_1111 & $target) | 0b0001_0000
-    };
-    (5, $target:expr) => {
-        (0b0000_0111 & $target) | 0b0000_1000
-    };
-    (6, $target:expr) => {
-        (0b0000_0011 & $target) | 0b0000_0100
-    };
-    (7, $target:expr) => {
-        (0b0000_0001 & $target) | 0b0000_0010
-    };
-    (8, $target:expr) => {
-        0b0000_0001
-    };
-    (9, $target:expr) => {
-        0b0000_0000
-    };
-}
-
-macro_rules! unprefix {
-    (1, $target:expr) => {
-        $target & 0b0111_1111
-    };
-    (2, $target:expr) => {
-        $target & 0b0011_1111
-    };
-    (3, $target:expr) => {
-        $target & 0b0001_1111
-    };
-    (4, $target:expr) => {
-        $target & 0b0000_1111
-    };
-    (5, $target:expr) => {
-        $target & 0b0000_0111
-    };
-    (6, $target:expr) => {
-        $target & 0b0000_0011
-    };
-    (7, $target:expr) => {
-        $target & 0b0000_0001
-    };
-    (8, $target:expr) => {
-        0b0000_0000
-    };
-    (9, $target:expr) => {
-        0b0000_0000
-    };
-}
-
-macro_rules! offset {
-    (1) => {
-        0
-    };
-    (2) => {
-        1 << 7
-    };
-    (3) => {
-        offset!(2) as u32 + (1 << 14)
-    };
-    (4) => {
-        offset!(3) as u32 + (1 << 21)
-    };
-    (5) => {
-        offset!(4) as u64 + (1 << 28)
-    };
-    (6) => {
-        offset!(5) + (1 << 35)
-    };
-    (7) => {
-        offset!(6) + (1 << 42)
-    };
-    (8) => {
-        offset!(7) + (1 << 49)
-    };
-    (9) => {
-        offset!(8) + (1 << 56)
-    };
-    // Extended offsets for u128 (lengths 10-17)
-    (10) => {
-        offset!(9) as u128 + (1u128 << 64)
-    };
-    (11) => {
-        offset!(10) + (1u128 << 71)
-    };
-    (12) => {
-        offset!(11) + (1u128 << 78)
-    };
-    (13) => {
-        offset!(12) + (1u128 << 85)
-    };
-    (14) => {
-        offset!(13) + (1u128 << 92)
-    };
-    (15) => {
-        offset!(14) + (1u128 << 99)
-    };
-    (16) => {
-        offset!(15) + (1u128 << 106)
-    };
-    (17) => {
-        offset!(16) + (1u128 << 113)
-    };
-}
-
-macro_rules! encode_offset {
-    (2, $n:tt) => {
-        $n as u16 - offset!(2)
-    };
-    (3, $n:tt) => {
-        ($n as u32 - offset!(3)) << 8
-    };
-    (4, $n:tt) => {
-        ($n as u32 - offset!(4))
-    };
-    (5, $n:tt) => {
-        ($n as u64 - offset!(5)) << (8 * 3)
-    };
-    (6, $n:tt) => {
-        ($n as u64 - offset!(6)) << (8 * 2)
-    };
-    (7, $n:tt) => {
-        ($n as u64 - offset!(7)) << 8
-    };
-    (8, $n:tt) => {
-        ($n as u64 - offset!(8))
-    };
-    (9, $n:tt) => {
-        ($n as u64 - offset!(9))
-    };
-}
-
-macro_rules! copy_from_slice_offset {
-    (source = $source:ident, dest = $dest:ident, offset = $offset:tt) => {
-        let mut i = 0;
-        while i < $offset {
-            $dest[i] = $source[i];
-            i += 1;
-        }
-    };
-}
-
-// ============================================================================
-// Type modules
-// ============================================================================
+#[macro_use]
+mod macros;
 
 mod vi128;
 mod vi32;
@@ -231,20 +42,20 @@ mod vu128;
 mod vu32;
 mod vu64;
 
-// ============================================================================
-// Public re-exports
-// ============================================================================
+#[cfg(feature = "std")]
+use std::io::{Read, Result as IoResult, Write};
 
-pub use vi128::{decode_vi128, encode_vi128, Vi128};
-pub use vi32::{decode_vi32, encode_vi32, Vi32};
-pub use vi64::{decode_vi64, encode_vi64, Vi64};
-pub use vu128::{decode_vu128, encode_vu128, Vu128};
-pub use vu32::{decode_vu32, encode_vu32, Vu32};
-pub use vu64::{decode_vu64, encode_vu64, Vu64};
+pub use vi32::{Vi32, decode_vi32, encode_vi32};
+pub use vi64::{Vi64, decode_vi64, encode_vi64};
+pub use vi128::{Vi128, decode_vi128, encode_vi128};
+pub use vu32::{Vu32, decode_vu32, encode_vu32};
+pub use vu64::{Vu64, decode_vu64, encode_vu64};
+pub use vu128::{Vu128, decode_vu128, encode_vu128};
 
-// ============================================================================
-// Unified I/O Traits
-// ============================================================================
+#[cfg(feature = "async-futures")]
+pub use futures::{FuturesReadVlqExt, FuturesWriteVlqExt};
+#[cfg(feature = "async-tokio")]
+pub use tokio::{TokioReadVlqExt, TokioWriteVlqExt};
 
 #[cfg(feature = "std")]
 /// Extension trait for reading VLQ-encoded integers from a reader.
@@ -359,124 +170,12 @@ impl<W: Write> WriteVlqExt for W {
     }
 }
 
-#[cfg(feature = "async")]
-/// Extension trait for reading VLQ-encoded integers from an async reader.
-pub trait AsyncReadVlqExt {
-    /// Read a variable-length `u32` asynchronously.
-    fn read_vu32(&mut self) -> impl Future<Output = std::io::Result<u32>>;
-    /// Read a variable-length `i32` asynchronously.
-    fn read_vi32(&mut self) -> impl Future<Output = std::io::Result<i32>>;
-    /// Read a variable-length `u64` asynchronously.
-    fn read_vu64(&mut self) -> impl Future<Output = std::io::Result<u64>>;
-    /// Read a variable-length `i64` asynchronously.
-    fn read_vi64(&mut self) -> impl Future<Output = std::io::Result<i64>>;
-    /// Read a variable-length `u128` asynchronously.
-    fn read_vu128(&mut self) -> impl Future<Output = std::io::Result<u128>>;
-    /// Read a variable-length `i128` asynchronously.
-    fn read_vi128(&mut self) -> impl Future<Output = std::io::Result<i128>>;
-}
-
-#[cfg(feature = "async")]
-/// Extension trait for writing VLQ-encoded integers to an async writer.
-pub trait AsyncWriteVlqExt {
-    /// Write a variable-length `u32` asynchronously.
-    fn write_vu32(&mut self, n: u32) -> impl Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `i32` asynchronously.
-    fn write_vi32(&mut self, n: i32) -> impl Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `u64` asynchronously.
-    fn write_vu64(&mut self, n: u64) -> impl Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `i64` asynchronously.
-    fn write_vi64(&mut self, n: i64) -> impl Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `u128` asynchronously.
-    fn write_vu128(&mut self, n: u128) -> impl Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `i128` asynchronously.
-    fn write_vi128(&mut self, n: i128) -> impl Future<Output = std::io::Result<()>>;
-}
-
-#[cfg(feature = "async")]
-impl<R: AsyncRead + Unpin> AsyncReadVlqExt for R {
-    async fn read_vu32(&mut self) -> std::io::Result<u32> {
-        let mut buf = [0u8; vu32::VU32_BUF_SIZE];
-        self.read_exact(&mut buf[0..1]).await?;
-        let len = vu32::decode_len_vu32(buf[0]) as usize;
-        if len > 1 {
-            self.read_exact(&mut buf[1..len]).await?;
-        }
-        Ok(decode_vu32(vu32::Vu32(buf)))
-    }
-
-    async fn read_vi32(&mut self) -> std::io::Result<i32> {
-        self.read_vu32().await.map(vi32::zigzag_decode_i32)
-    }
-
-    async fn read_vu64(&mut self) -> std::io::Result<u64> {
-        let mut buf = [0u8; vu64::VU64_BUF_SIZE];
-        self.read_exact(&mut buf[0..1]).await?;
-        let len = vu64::decode_len_vu64(buf[0]) as usize;
-        if len > 1 {
-            self.read_exact(&mut buf[1..len]).await?;
-        }
-        Ok(decode_vu64(vu64::Vu64(buf)))
-    }
-
-    async fn read_vi64(&mut self) -> std::io::Result<i64> {
-        self.read_vu64().await.map(vi64::zigzag_decode_i64)
-    }
-
-    async fn read_vu128(&mut self) -> std::io::Result<u128> {
-        let mut buf = [0u8; vu128::VU128_BUF_SIZE];
-        self.read_exact(&mut buf[0..1]).await?;
-        if buf[0] == 0 {
-            self.read_exact(&mut buf[1..2]).await?;
-        }
-        let len = vu128::decode_len_vu128(buf[0], buf[1]) as usize;
-        if len > 2 {
-            self.read_exact(&mut buf[2..len]).await?;
-        } else if len == 2 && buf[0] != 0 {
-            self.read_exact(&mut buf[1..2]).await?;
-        }
-        Ok(decode_vu128(vu128::Vu128(buf)))
-    }
-
-    async fn read_vi128(&mut self) -> std::io::Result<i128> {
-        self.read_vu128().await.map(vi128::zigzag_decode_i128)
-    }
-}
-
-#[cfg(feature = "async")]
-impl<W: AsyncWrite + Unpin> AsyncWriteVlqExt for W {
-    async fn write_vu32(&mut self, n: u32) -> std::io::Result<()> {
-        self.write_all(encode_vu32(n).as_slice()).await
-    }
-
-    async fn write_vi32(&mut self, n: i32) -> std::io::Result<()> {
-        self.write_vu32(vi32::zigzag_encode_i32(n)).await
-    }
-
-    async fn write_vu64(&mut self, n: u64) -> std::io::Result<()> {
-        self.write_all(encode_vu64(n).as_slice()).await
-    }
-
-    async fn write_vi64(&mut self, n: i64) -> std::io::Result<()> {
-        self.write_vu64(vi64::zigzag_encode_i64(n)).await
-    }
-
-    async fn write_vu128(&mut self, n: u128) -> std::io::Result<()> {
-        self.write_all(encode_vu128(n).as_slice()).await
-    }
-
-    async fn write_vi128(&mut self, n: i128) -> std::io::Result<()> {
-        self.write_vu128(vi128::zigzag_encode_i128(n)).await
-    }
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vi32::zigzag_encode_i32;
+    use vi64::zigzag_encode_i64;
+    use vi128::zigzag_encode_i128;
     use vu64::decode_len_vu64;
 
     #[test]
@@ -610,14 +309,6 @@ mod tests {
             "max"
         );
     }
-}
-
-#[cfg(test)]
-mod tests_new_types {
-    use super::*;
-    use vi128::zigzag_encode_i128;
-    use vi32::zigzag_encode_i32;
-    use vi64::zigzag_encode_i64;
 
     #[test]
     fn zigzag_i32() {

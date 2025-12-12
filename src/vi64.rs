@@ -2,7 +2,7 @@
 
 use core::fmt::{Debug, Display};
 
-use crate::vu64::{decode_vu64, encode_vu64, Vu64};
+use crate::vu64::{Vu64, decode_vu64, encode_vu64};
 
 #[inline(always)]
 pub(crate) const fn zigzag_encode_i64(n: i64) -> u64 {
@@ -88,9 +88,9 @@ impl Debug for Vi64 {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         let len = self.len() as usize - 1;
         write!(f, "Vi64(0b")?;
-        for x in self.0 .0.iter().take(len) {
+        for x in self.0.0.iter().take(len) {
             f.write_fmt(core::format_args!("{:08b}_", x))?;
         }
-        f.write_fmt(core::format_args!("{:08b})", self.0 .0[len]))
+        f.write_fmt(core::format_args!("{:08b})", self.0.0[len]))
     }
 }

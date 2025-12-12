@@ -46,7 +46,8 @@ fastvlq = "2"
 ## Features
 
 - `std` (default) - Enables `Read`/`Write` extension traits
-- `async` - Enables async `Read`/`Write` extension traits via `futures-io`
+- `async-futures` - Enables async extension traits via `futures-io`
+- `async-tokio` - Enables async extension traits via `tokio`
 
 ## Where is this used?
 

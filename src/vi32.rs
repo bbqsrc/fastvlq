@@ -2,7 +2,7 @@
 
 use core::fmt::{Debug, Display};
 
-use crate::vu32::{decode_vu32, encode_vu32, Vu32};
+use crate::vu32::{Vu32, decode_vu32, encode_vu32};
 
 #[inline(always)]
 pub(crate) const fn zigzag_encode_i32(n: i32) -> u32 {
@@ -88,9 +88,9 @@ impl Debug for Vi32 {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         let len = self.len() as usize - 1;
         write!(f, "Vi32(0b")?;
-        for x in self.0 .0.iter().take(len) {
+        for x in self.0.0.iter().take(len) {
             f.write_fmt(core::format_args!("{:08b}_", x))?;
         }
-        f.write_fmt(core::format_args!("{:08b})", self.0 .0[len]))
+        f.write_fmt(core::format_args!("{:08b})", self.0.0[len]))
     }
 }
