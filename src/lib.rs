@@ -1,9 +1,14 @@
 //! ## Algorithm
 //!
 //! Fast VLQ is a variant of value-length quantity encoding, with a focus on encoding and
-//! decoding speed. The total number of bytes can always be derived from the very first byte,
-//! and unlike VLQ, the integer type supported is `u64` exclusively, and will
-//! take up a maximum of 9 bytes (for values greater than 56-bit).
+//! decoding speed. The total number of bytes can always be derived from the very first byte.
+//!
+//! Supported types:
+//! - `Vu32` / `Vi32`: unsigned/signed 32-bit (max 5 bytes)
+//! - `Vu64` / `Vi64`: unsigned/signed 64-bit (max 9 bytes)
+//! - `Vu128` / `Vi128`: unsigned/signed 128-bit (max 18 bytes)
+//!
+//! Signed types use zigzag encoding for efficient storage of small absolute values.
 //!
 //! This crate does not enforce an invariant that a number may only have one representation,
 //! which means that it is possible to encode `1` as, for example, both `0b1000_0001` and
@@ -15,14 +20,12 @@
 //!
 //! ```toml
 //! [dependencies]
-//! fastvlq = "1"
+//! fastvlq = "2"
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::cast_lossless)]
 #![deny(missing_docs)]
-
-use core::fmt::{Debug, Display};
 
 #[cfg(feature = "std")]
 use std::io::{Read, Result as IoResult, Write};
@@ -33,6 +36,10 @@ use core::future::Future;
 use futures_io::{AsyncRead, AsyncWrite};
 #[cfg(feature = "async")]
 use futures_util::{AsyncReadExt, AsyncWriteExt};
+
+// ============================================================================
+// Internal macros (used by submodules)
+// ============================================================================
 
 macro_rules! prefix {
     (1) => {
@@ -149,6 +156,31 @@ macro_rules! offset {
     (9) => {
         offset!(8) + (1 << 56)
     };
+    // Extended offsets for u128 (lengths 10-17)
+    (10) => {
+        offset!(9) as u128 + (1u128 << 64)
+    };
+    (11) => {
+        offset!(10) + (1u128 << 71)
+    };
+    (12) => {
+        offset!(11) + (1u128 << 78)
+    };
+    (13) => {
+        offset!(12) + (1u128 << 85)
+    };
+    (14) => {
+        offset!(13) + (1u128 << 92)
+    };
+    (15) => {
+        offset!(14) + (1u128 << 99)
+    };
+    (16) => {
+        offset!(15) + (1u128 << 106)
+    };
+    (17) => {
+        offset!(16) + (1u128 << 113)
+    };
 }
 
 macro_rules! encode_offset {
@@ -178,48 +210,6 @@ macro_rules! encode_offset {
     };
 }
 
-/// Decoding bit depth by prefix in bits:
-///
-/// 1xxx_xxxx: 1 byte
-/// 01xx_xxxx: 2 bytes
-/// 001x_xxxx: 3 bytes
-/// 0001_xxxx: 4 bytes
-/// 0000_1xxx: 5 bytes
-/// 0000_01xx: 6 bytes
-/// 0000_001x: 7 bytes
-/// 0000_0001: 8 bytes
-/// 0000_0000: 9 bytes
-#[inline(always)]
-const fn decode_len_vu64(n: u8) -> u8 {
-    n.leading_zeros() as u8 + 1
-}
-
-/// Encoding bit depth by length in bytes:
-///
-/// 1: 7 bits
-/// 2: 14 (6 + 8) bits
-/// 3: 21 (5 + 8 * 2) bits
-/// 4: 28 (4 + 8 * 3) bits
-/// 5: 35 (3 + 8 * 4) bits
-/// 6: 42 (2 + 8 * 5) bits
-/// 7: 49 (1 + 8 * 6) bits
-/// 8: 56 (0 + 8 * 7) bits
-/// 9: 64 (0 + 8 * 8) bits
-#[inline(always)]
-const fn encode_len_vu64(n: u64) -> u8 {
-    match n {
-        n if n < offset!(2) as u64 => 1,
-        n if n < offset!(3) as u64 => 2,
-        n if n < offset!(4) as u64 => 3,
-        n if n < offset!(5) => 4,
-        n if n < offset!(6) => 5,
-        n if n < offset!(7) => 6,
-        n if n < offset!(8) => 7,
-        n if n < offset!(9) => 8,
-        _ => 9,
-    }
-}
-
 macro_rules! copy_from_slice_offset {
     (source = $source:ident, dest = $dest:ident, offset = $offset:tt) => {
         let mut i = 0;
@@ -230,253 +220,264 @@ macro_rules! copy_from_slice_offset {
     };
 }
 
-/// Encode a u64 in value-length quantity encoding.
-#[inline(always)]
-#[must_use]
-pub const fn encode_vu64(n: u64) -> Vu64 {
-    let len = encode_len_vu64(n);
-    let mut out_buf = [0u8; VU64_BUF_SIZE];
+// ============================================================================
+// Type modules
+// ============================================================================
 
-    match len {
-        1 => {
-            out_buf[0] = prefix!(1, n as u8);
-        }
-        2 => {
-            let buf = encode_offset!(2, n).to_be_bytes();
-            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 2);
-            out_buf[0] = prefix!(2, buf[0]);
-        }
-        3 => {
-            let buf = encode_offset!(3, n).to_be_bytes();
-            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 3);
-            out_buf[0] = prefix!(3, buf[0]);
-        }
-        4 => {
-            let buf = encode_offset!(4, n).to_be_bytes();
-            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 4);
-            out_buf[0] = prefix!(4, buf[0]);
-        }
-        5 => {
-            let buf = encode_offset!(5, n).to_be_bytes();
-            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 5);
-            out_buf[0] = prefix!(5, buf[0]);
-        }
-        6 => {
-            let buf = encode_offset!(6, n).to_be_bytes();
-            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 6);
-            out_buf[0] = prefix!(6, buf[0]);
-        }
-        7 => {
-            let buf = encode_offset!(7, n).to_be_bytes();
-            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 7);
-            out_buf[0] = prefix!(7, buf[0]);
-        }
-        8 => {
-            let buf = encode_offset!(8, n).to_be_bytes();
-            copy_from_slice_offset!(source = buf, dest = out_buf, offset = 8);
-            out_buf[0] = prefix!(8, buf[0]);
-        }
-        _ => {
-            let buf = encode_offset!(9, n).to_be_bytes();
-            let mut i = 0;
-            while i < 8 {
-                out_buf[i + 1] = buf[i];
-                i += 1;
-            }
-            out_buf[0] = prefix!(9, buf[0]);
-        }
-    };
+mod vi128;
+mod vi32;
+mod vi64;
+mod vu128;
+mod vu32;
+mod vu64;
 
-    Vu64(out_buf)
-}
+// ============================================================================
+// Public re-exports
+// ============================================================================
 
-/// Decode a given VLQ instance back into a native u64.
-#[inline(always)]
-pub const fn decode_vu64(n: Vu64) -> u64 {
-    let len = n.len();
-    let n = n.bytes();
+pub use vi128::{decode_vi128, encode_vi128, Vi128};
+pub use vi32::{decode_vi32, encode_vi32, Vi32};
+pub use vi64::{decode_vi64, encode_vi64, Vi64};
+pub use vu128::{decode_vu128, encode_vu128, Vu128};
+pub use vu32::{decode_vu32, encode_vu32, Vu32};
+pub use vu64::{decode_vu64, encode_vu64, Vu64};
 
-    match len {
-        1 => unprefix!(1, n[0] as u64),
-        2 => u64::from_le_bytes([n[1], unprefix!(2, n[0]), 0, 0, 0, 0, 0, 0]) + offset!(2) as u64,
-        3 => {
-            u64::from_le_bytes([n[2], n[1], unprefix!(3, n[0]), 0, 0, 0, 0, 0]) + offset!(3) as u64
-        }
-        4 => {
-            u64::from_le_bytes([n[3], n[2], n[1], unprefix!(4, n[0]), 0, 0, 0, 0])
-                + offset!(4) as u64
-        }
-        5 => {
-            u64::from_le_bytes([n[4], n[3], n[2], n[1], unprefix!(5, n[0]), 0, 0, 0])
-                + offset!(5) as u64
-        }
-        6 => {
-            u64::from_le_bytes([n[5], n[4], n[3], n[2], n[1], unprefix!(6, n[0]), 0, 0])
-                + offset!(6) as u64
-        }
-        7 => {
-            u64::from_le_bytes([n[6], n[5], n[4], n[3], n[2], n[1], unprefix!(7, n[0]), 0])
-                + offset!(7) as u64
-        }
-        8 => {
-            u64::from_le_bytes([n[7], n[6], n[5], n[4], n[3], n[2], n[1], unprefix!(8, n[0])])
-                + offset!(8) as u64
-        }
-        _ => {
-            u64::from_le_bytes([n[8], n[7], n[6], n[5], n[4], n[3], n[2], n[1]]) + offset!(9) as u64
-        }
-    }
-}
-
-const VU64_BUF_SIZE: usize = 9;
-
-/// An unsigned 64-bit integer in value-length quantity encoding.
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub struct Vu64([u8; VU64_BUF_SIZE]);
-
-#[allow(clippy::len_without_is_empty)]
-impl Vu64 {
-    /// Construct a new VLQ instance from the given `u64`.
-    #[inline(always)]
-    #[must_use]
-    pub const fn new(value: u64) -> Vu64 {
-        encode_vu64(value)
-    }
-
-    /// Length of the internal representation
-    #[inline(always)]
-    pub const fn len(&self) -> u8 {
-        decode_len_vu64(self.0[0])
-    }
-
-    /// Retrieve the stored number as `u64`.
-    #[inline(always)]
-    pub const fn get(&self) -> u64 {
-        decode_vu64(*self)
-    }
-
-    /// Get the raw byte representation of the VLQ instance
-    #[inline(always)]
-    pub const fn bytes(&self) -> [u8; 9] {
-        self.0
-    }
-
-    /// Get the serialized representation of the VLQ as a slice.
-    #[inline(always)]
-    pub fn as_slice(&self) -> &[u8] {
-        &self.0[..(self.len() as usize)]
-    }
-}
-
-impl From<u64> for Vu64 {
-    fn from(n: u64) -> Self {
-        encode_vu64(n)
-    }
-}
-
-impl From<Vu64> for u64 {
-    fn from(n: Vu64) -> Self {
-        decode_vu64(n)
-    }
-}
-
-impl Display for Vu64 {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        Display::fmt(&self.get(), f)
-    }
-}
-
-impl Debug for Vu64 {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        let len = self.len() as usize - 1;
-        write!(f, "Vu64(0b")?;
-        for x in self.0.iter().take(len) {
-            f.write_fmt(core::format_args!("{:08b}_", x))?;
-        }
-        f.write_fmt(core::format_args!("{:08b})", self.0[len]))
-    }
-}
+// ============================================================================
+// Unified I/O Traits
+// ============================================================================
 
 #[cfg(feature = "std")]
-/// Extension trait to support reading bytes from standard reader interface as VLQ.
-pub trait ReadVu64Ext<T> {
+/// Extension trait for reading VLQ-encoded integers from a reader.
+pub trait ReadVlqExt {
+    /// Read a variable-length `u32`.
+    fn read_vu32(&mut self) -> IoResult<u32>;
+    /// Read a variable-length `i32`.
+    fn read_vi32(&mut self) -> IoResult<i32>;
     /// Read a variable-length `u64`.
-    fn read_vu64(&mut self) -> IoResult<T>;
+    fn read_vu64(&mut self) -> IoResult<u64>;
+    /// Read a variable-length `i64`.
+    fn read_vi64(&mut self) -> IoResult<i64>;
+    /// Read a variable-length `u128`.
+    fn read_vu128(&mut self) -> IoResult<u128>;
+    /// Read a variable-length `i128`.
+    fn read_vi128(&mut self) -> IoResult<i128>;
 }
 
 #[cfg(feature = "std")]
-/// Extension trait to support writing VLQ to standard writer interface.
-pub trait WriteVu64Ext<T> {
+/// Extension trait for writing VLQ-encoded integers to a writer.
+pub trait WriteVlqExt {
+    /// Write a variable-length `u32`.
+    fn write_vu32(&mut self, n: u32) -> IoResult<()>;
+    /// Write a variable-length `i32`.
+    fn write_vi32(&mut self, n: i32) -> IoResult<()>;
     /// Write a variable-length `u64`.
-    fn write_vu64(&mut self, n: T) -> IoResult<()>;
+    fn write_vu64(&mut self, n: u64) -> IoResult<()>;
+    /// Write a variable-length `i64`.
+    fn write_vi64(&mut self, n: i64) -> IoResult<()>;
+    /// Write a variable-length `u128`.
+    fn write_vu128(&mut self, n: u128) -> IoResult<()>;
+    /// Write a variable-length `i128`.
+    fn write_vi128(&mut self, n: i128) -> IoResult<()>;
 }
 
 #[cfg(feature = "std")]
-impl<R: Read> ReadVu64Ext<u64> for R {
-    fn read_vu64(&mut self) -> IoResult<u64> {
-        let mut buf: [u8; 9] = [0; 9];
+impl<R: Read> ReadVlqExt for R {
+    fn read_vu32(&mut self) -> IoResult<u32> {
+        let mut buf = [0u8; vu32::VU32_BUF_SIZE];
         self.read_exact(&mut buf[0..1])?;
-
-        let len = decode_len_vu64(buf[0]);
-        if len != 1 {
-            self.read_exact(&mut buf[1..len as usize])?;
+        let len = vu32::decode_len_vu32(buf[0]) as usize;
+        if len > 1 {
+            self.read_exact(&mut buf[1..len])?;
         }
+        Ok(decode_vu32(vu32::Vu32(buf)))
+    }
 
-        let vlq = Vu64(buf);
-        Ok(decode_vu64(vlq))
+    fn read_vi32(&mut self) -> IoResult<i32> {
+        self.read_vu32().map(vi32::zigzag_decode_i32)
+    }
+
+    fn read_vu64(&mut self) -> IoResult<u64> {
+        let mut buf = [0u8; vu64::VU64_BUF_SIZE];
+        self.read_exact(&mut buf[0..1])?;
+        let len = vu64::decode_len_vu64(buf[0]) as usize;
+        if len > 1 {
+            self.read_exact(&mut buf[1..len])?;
+        }
+        Ok(decode_vu64(vu64::Vu64(buf)))
+    }
+
+    fn read_vi64(&mut self) -> IoResult<i64> {
+        self.read_vu64().map(vi64::zigzag_decode_i64)
+    }
+
+    fn read_vu128(&mut self) -> IoResult<u128> {
+        let mut buf = [0u8; vu128::VU128_BUF_SIZE];
+        self.read_exact(&mut buf[0..1])?;
+        // Need second byte to determine extended length
+        if buf[0] == 0 {
+            self.read_exact(&mut buf[1..2])?;
+        }
+        let len = vu128::decode_len_vu128(buf[0], buf[1]) as usize;
+        if len > 2 {
+            self.read_exact(&mut buf[2..len])?;
+        } else if len == 2 && buf[0] != 0 {
+            // Standard 2-byte (not extended), already read first byte
+            self.read_exact(&mut buf[1..2])?;
+        }
+        Ok(decode_vu128(vu128::Vu128(buf)))
+    }
+
+    fn read_vi128(&mut self) -> IoResult<i128> {
+        self.read_vu128().map(vi128::zigzag_decode_i128)
     }
 }
 
 #[cfg(feature = "std")]
-impl<W: Write> WriteVu64Ext<u64> for W {
+impl<W: Write> WriteVlqExt for W {
+    fn write_vu32(&mut self, n: u32) -> IoResult<()> {
+        self.write_all(encode_vu32(n).as_slice())
+    }
+
+    fn write_vi32(&mut self, n: i32) -> IoResult<()> {
+        self.write_vu32(vi32::zigzag_encode_i32(n))
+    }
+
     fn write_vu64(&mut self, n: u64) -> IoResult<()> {
-        let vlq = encode_vu64(n);
-        self.write_all(vlq.as_slice())
+        self.write_all(encode_vu64(n).as_slice())
+    }
+
+    fn write_vi64(&mut self, n: i64) -> IoResult<()> {
+        self.write_vu64(vi64::zigzag_encode_i64(n))
+    }
+
+    fn write_vu128(&mut self, n: u128) -> IoResult<()> {
+        self.write_all(encode_vu128(n).as_slice())
+    }
+
+    fn write_vi128(&mut self, n: i128) -> IoResult<()> {
+        self.write_vu128(vi128::zigzag_encode_i128(n))
     }
 }
 
 #[cfg(feature = "async")]
-/// Extension trait to support reading bytes from async reader interface as VLQ.
-pub trait AsyncReadVu64Ext {
+/// Extension trait for reading VLQ-encoded integers from an async reader.
+pub trait AsyncReadVlqExt {
+    /// Read a variable-length `u32` asynchronously.
+    fn read_vu32(&mut self) -> impl Future<Output = std::io::Result<u32>>;
+    /// Read a variable-length `i32` asynchronously.
+    fn read_vi32(&mut self) -> impl Future<Output = std::io::Result<i32>>;
     /// Read a variable-length `u64` asynchronously.
     fn read_vu64(&mut self) -> impl Future<Output = std::io::Result<u64>>;
+    /// Read a variable-length `i64` asynchronously.
+    fn read_vi64(&mut self) -> impl Future<Output = std::io::Result<i64>>;
+    /// Read a variable-length `u128` asynchronously.
+    fn read_vu128(&mut self) -> impl Future<Output = std::io::Result<u128>>;
+    /// Read a variable-length `i128` asynchronously.
+    fn read_vi128(&mut self) -> impl Future<Output = std::io::Result<i128>>;
 }
 
 #[cfg(feature = "async")]
-impl<R: AsyncRead + Unpin> AsyncReadVu64Ext for R {
-    async fn read_vu64(&mut self) -> std::io::Result<u64> {
-        let mut buf: [u8; 9] = [0; 9];
-        self.read_exact(&mut buf[0..1]).await?;
-
-        let len = decode_len_vu64(buf[0]);
-        if len != 1 {
-            self.read_exact(&mut buf[1..len as usize]).await?;
-        }
-
-        let vlq = Vu64(buf);
-        Ok(decode_vu64(vlq))
-    }
-}
-
-#[cfg(feature = "async")]
-/// Extension trait to support writing VLQ to async writer interface.
-pub trait AsyncWriteVu64Ext {
+/// Extension trait for writing VLQ-encoded integers to an async writer.
+pub trait AsyncWriteVlqExt {
+    /// Write a variable-length `u32` asynchronously.
+    fn write_vu32(&mut self, n: u32) -> impl Future<Output = std::io::Result<()>>;
+    /// Write a variable-length `i32` asynchronously.
+    fn write_vi32(&mut self, n: i32) -> impl Future<Output = std::io::Result<()>>;
     /// Write a variable-length `u64` asynchronously.
     fn write_vu64(&mut self, n: u64) -> impl Future<Output = std::io::Result<()>>;
+    /// Write a variable-length `i64` asynchronously.
+    fn write_vi64(&mut self, n: i64) -> impl Future<Output = std::io::Result<()>>;
+    /// Write a variable-length `u128` asynchronously.
+    fn write_vu128(&mut self, n: u128) -> impl Future<Output = std::io::Result<()>>;
+    /// Write a variable-length `i128` asynchronously.
+    fn write_vi128(&mut self, n: i128) -> impl Future<Output = std::io::Result<()>>;
 }
 
 #[cfg(feature = "async")]
-impl<W: AsyncWrite + Unpin> AsyncWriteVu64Ext for W {
-    async fn write_vu64(&mut self, n: u64) -> std::io::Result<()> {
-        let vlq = encode_vu64(n);
-        self.write_all(vlq.as_slice()).await
+impl<R: AsyncRead + Unpin> AsyncReadVlqExt for R {
+    async fn read_vu32(&mut self) -> std::io::Result<u32> {
+        let mut buf = [0u8; vu32::VU32_BUF_SIZE];
+        self.read_exact(&mut buf[0..1]).await?;
+        let len = vu32::decode_len_vu32(buf[0]) as usize;
+        if len > 1 {
+            self.read_exact(&mut buf[1..len]).await?;
+        }
+        Ok(decode_vu32(vu32::Vu32(buf)))
+    }
+
+    async fn read_vi32(&mut self) -> std::io::Result<i32> {
+        self.read_vu32().await.map(vi32::zigzag_decode_i32)
+    }
+
+    async fn read_vu64(&mut self) -> std::io::Result<u64> {
+        let mut buf = [0u8; vu64::VU64_BUF_SIZE];
+        self.read_exact(&mut buf[0..1]).await?;
+        let len = vu64::decode_len_vu64(buf[0]) as usize;
+        if len > 1 {
+            self.read_exact(&mut buf[1..len]).await?;
+        }
+        Ok(decode_vu64(vu64::Vu64(buf)))
+    }
+
+    async fn read_vi64(&mut self) -> std::io::Result<i64> {
+        self.read_vu64().await.map(vi64::zigzag_decode_i64)
+    }
+
+    async fn read_vu128(&mut self) -> std::io::Result<u128> {
+        let mut buf = [0u8; vu128::VU128_BUF_SIZE];
+        self.read_exact(&mut buf[0..1]).await?;
+        if buf[0] == 0 {
+            self.read_exact(&mut buf[1..2]).await?;
+        }
+        let len = vu128::decode_len_vu128(buf[0], buf[1]) as usize;
+        if len > 2 {
+            self.read_exact(&mut buf[2..len]).await?;
+        } else if len == 2 && buf[0] != 0 {
+            self.read_exact(&mut buf[1..2]).await?;
+        }
+        Ok(decode_vu128(vu128::Vu128(buf)))
+    }
+
+    async fn read_vi128(&mut self) -> std::io::Result<i128> {
+        self.read_vu128().await.map(vi128::zigzag_decode_i128)
     }
 }
+
+#[cfg(feature = "async")]
+impl<W: AsyncWrite + Unpin> AsyncWriteVlqExt for W {
+    async fn write_vu32(&mut self, n: u32) -> std::io::Result<()> {
+        self.write_all(encode_vu32(n).as_slice()).await
+    }
+
+    async fn write_vi32(&mut self, n: i32) -> std::io::Result<()> {
+        self.write_vu32(vi32::zigzag_encode_i32(n)).await
+    }
+
+    async fn write_vu64(&mut self, n: u64) -> std::io::Result<()> {
+        self.write_all(encode_vu64(n).as_slice()).await
+    }
+
+    async fn write_vi64(&mut self, n: i64) -> std::io::Result<()> {
+        self.write_vu64(vi64::zigzag_encode_i64(n)).await
+    }
+
+    async fn write_vu128(&mut self, n: u128) -> std::io::Result<()> {
+        self.write_all(encode_vu128(n).as_slice()).await
+    }
+
+    async fn write_vi128(&mut self, n: i128) -> std::io::Result<()> {
+        self.write_vu128(vi128::zigzag_encode_i128(n)).await
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vu64::decode_len_vu64;
 
     #[test]
     fn check_decode() {
@@ -611,6 +612,133 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod tests_new_types {
+    use super::*;
+    use vi128::zigzag_encode_i128;
+    use vi32::zigzag_encode_i32;
+    use vi64::zigzag_encode_i64;
+
+    #[test]
+    fn zigzag_i32() {
+        assert_eq!(zigzag_encode_i32(0), 0);
+        assert_eq!(zigzag_encode_i32(-1), 1);
+        assert_eq!(zigzag_encode_i32(1), 2);
+        assert_eq!(zigzag_encode_i32(-2), 3);
+        assert_eq!(zigzag_encode_i32(2), 4);
+        assert_eq!(
+            vi32::zigzag_decode_i32(zigzag_encode_i32(i32::MIN)),
+            i32::MIN
+        );
+        assert_eq!(
+            vi32::zigzag_decode_i32(zigzag_encode_i32(i32::MAX)),
+            i32::MAX
+        );
+    }
+
+    #[test]
+    fn zigzag_i64() {
+        assert_eq!(zigzag_encode_i64(0), 0);
+        assert_eq!(zigzag_encode_i64(-1), 1);
+        assert_eq!(zigzag_encode_i64(1), 2);
+        assert_eq!(
+            vi64::zigzag_decode_i64(zigzag_encode_i64(i64::MIN)),
+            i64::MIN
+        );
+        assert_eq!(
+            vi64::zigzag_decode_i64(zigzag_encode_i64(i64::MAX)),
+            i64::MAX
+        );
+    }
+
+    #[test]
+    fn zigzag_i128() {
+        assert_eq!(zigzag_encode_i128(0), 0);
+        assert_eq!(zigzag_encode_i128(-1), 1);
+        assert_eq!(zigzag_encode_i128(1), 2);
+        assert_eq!(
+            vi128::zigzag_decode_i128(zigzag_encode_i128(i128::MIN)),
+            i128::MIN
+        );
+        assert_eq!(
+            vi128::zigzag_decode_i128(zigzag_encode_i128(i128::MAX)),
+            i128::MAX
+        );
+    }
+
+    #[test]
+    fn vu32_round_trip() {
+        assert_eq!(decode_vu32(encode_vu32(0)), 0);
+        assert_eq!(decode_vu32(encode_vu32(127)), 127);
+        assert_eq!(decode_vu32(encode_vu32(128)), 128);
+        assert_eq!(decode_vu32(encode_vu32(u32::MAX)), u32::MAX);
+
+        // Check lengths
+        assert_eq!(encode_vu32(0).len(), 1);
+        assert_eq!(encode_vu32(127).len(), 1);
+        assert_eq!(encode_vu32(128).len(), 2);
+        assert_eq!(encode_vu32(u32::MAX).len(), 5);
+    }
+
+    #[test]
+    fn vi32_round_trip() {
+        assert_eq!(decode_vi32(encode_vi32(0)), 0);
+        assert_eq!(decode_vi32(encode_vi32(1)), 1);
+        assert_eq!(decode_vi32(encode_vi32(-1)), -1);
+        assert_eq!(decode_vi32(encode_vi32(i32::MIN)), i32::MIN);
+        assert_eq!(decode_vi32(encode_vi32(i32::MAX)), i32::MAX);
+
+        // Small values should be compact
+        assert_eq!(encode_vi32(0).len(), 1);
+        assert_eq!(encode_vi32(1).len(), 1);
+        assert_eq!(encode_vi32(-1).len(), 1);
+    }
+
+    #[test]
+    fn vi64_round_trip() {
+        assert_eq!(decode_vi64(encode_vi64(0)), 0);
+        assert_eq!(decode_vi64(encode_vi64(1)), 1);
+        assert_eq!(decode_vi64(encode_vi64(-1)), -1);
+        assert_eq!(decode_vi64(encode_vi64(i64::MIN)), i64::MIN);
+        assert_eq!(decode_vi64(encode_vi64(i64::MAX)), i64::MAX);
+
+        // Small values should be compact
+        assert_eq!(encode_vi64(0).len(), 1);
+        assert_eq!(encode_vi64(1).len(), 1);
+        assert_eq!(encode_vi64(-1).len(), 1);
+    }
+
+    #[test]
+    fn vu128_round_trip_small() {
+        // Small values (same as u64 range)
+        assert_eq!(decode_vu128(encode_vu128(0)), 0);
+        assert_eq!(decode_vu128(encode_vu128(127)), 127);
+        assert_eq!(decode_vu128(encode_vu128(128)), 128);
+        assert_eq!(
+            decode_vu128(encode_vu128(u64::MAX as u128)),
+            u64::MAX as u128
+        );
+    }
+
+    #[test]
+    fn vu128_round_trip_large() {
+        // Large values (beyond u64 range)
+        let val = u64::MAX as u128 + 1;
+        assert_eq!(decode_vu128(encode_vu128(val)), val);
+
+        assert_eq!(decode_vu128(encode_vu128(u128::MAX)), u128::MAX);
+    }
+
+    #[test]
+    fn vi128_round_trip() {
+        assert_eq!(decode_vi128(encode_vi128(0)), 0);
+        assert_eq!(decode_vi128(encode_vi128(1)), 1);
+        assert_eq!(decode_vi128(encode_vi128(-1)), -1);
+        assert_eq!(decode_vi128(encode_vi128(i128::MIN)), i128::MIN);
+        assert_eq!(decode_vi128(encode_vi128(i128::MAX)), i128::MAX);
+    }
+}
+
 #[cfg(all(feature = "std", test))]
 mod property_tests {
     use super::*;
@@ -618,8 +746,33 @@ mod property_tests {
 
     proptest! {
         #[test]
-        fn roundtrip(x: u64) {
+        fn roundtrip_u64(x: u64) {
             prop_assert_eq!(u64::from(Vu64::from(x)), x);
+        }
+
+        #[test]
+        fn roundtrip_i64(x: i64) {
+            prop_assert_eq!(i64::from(Vi64::from(x)), x);
+        }
+
+        #[test]
+        fn roundtrip_u32(x: u32) {
+            prop_assert_eq!(u32::from(Vu32::from(x)), x);
+        }
+
+        #[test]
+        fn roundtrip_i32(x: i32) {
+            prop_assert_eq!(i32::from(Vi32::from(x)), x);
+        }
+
+        #[test]
+        fn roundtrip_u128(x: u128) {
+            prop_assert_eq!(u128::from(Vu128::from(x)), x);
+        }
+
+        #[test]
+        fn roundtrip_i128(x: i128) {
+            prop_assert_eq!(i128::from(Vi128::from(x)), x);
         }
     }
 }

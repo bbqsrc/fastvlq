@@ -5,7 +5,7 @@ documentation = "https://docs.rs/fastvlq"
 repository = "https://github.com/bbqsrc/fastvlq"
 version = "2.0.0"
 authors = ["Brendan Molloy <brendan@bbqsrc.net>"]
-categories = ["algorithms", "compression", "encoding", "no-std"]
+categories = ["algorithms", "compression", "data-structures", "encoding", "no-std"]
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 
