@@ -106,6 +106,23 @@ pub const fn encode_vu64(n: u64) -> Vu64 {
     Vu64(out_buf)
 }
 
+/// Decode a u64 from a byte slice.
+///
+/// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
+/// This is useful for zero-copy decoding from mmap'd data.
+#[inline(always)]
+pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
+    let first = *data.first()?;
+    let len = decode_len_vu64(first) as usize;
+    if data.len() < len {
+        return None;
+    }
+
+    let mut buf = [0u8; VU64_BUF_SIZE];
+    buf[..len].copy_from_slice(&data[..len]);
+    Some((decode_vu64(Vu64(buf)), len))
+}
+
 /// Decode a given VLQ instance back into a native u64.
 #[inline(always)]
 pub const fn decode_vu64(n: Vu64) -> u64 {

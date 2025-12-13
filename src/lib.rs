@@ -51,7 +51,7 @@ pub use vi32::{Vi32, decode_vi32, encode_vi32};
 pub use vi64::{Vi64, decode_vi64, encode_vi64};
 pub use vi128::{Vi128, decode_vi128, encode_vi128};
 pub use vu32::{Vu32, decode_vu32, encode_vu32};
-pub use vu64::{Vu64, decode_vu64, encode_vu64};
+pub use vu64::{Vu64, decode_vu64, decode_vu64_slice, encode_vu64};
 pub use vu128::{Vu128, decode_vu128, encode_vu128};
 
 #[cfg(any(feature = "async-futures", feature = "async-tokio"))]
