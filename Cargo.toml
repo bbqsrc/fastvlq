@@ -17,9 +17,15 @@ tokio = { version = "1", default-features = false, features = ["io-util"], optio
 [dev-dependencies]
 proptest = "1.9"
 rand = "0.9"
+criterion = "0.5"
+
+[[bench]]
+name = "vlq"
+harness = false
 
 [features]
 default = ["std"]
 std = []
 async-futures = ["futures-io", "futures-util"]
 async-tokio = ["tokio"]
+asm = []

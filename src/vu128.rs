@@ -1,6 +1,9 @@
 //! Unsigned 128-bit VLQ encoding.
 
 use core::fmt::{Debug, Display};
+use core::marker::PhantomData;
+
+use crate::{BE, LE};
 
 pub(crate) const VU128_BUF_SIZE: usize = 18;
 
@@ -38,7 +41,6 @@ const fn encode_len_vu128(n: u128) -> u8 {
     }
 
     // For 9-byte: value must encode with second byte >= 0x80
-    // This means encoded value (n - offset!(9)) >= 2^63
     let nine_byte_min = offset!(9) as u128 + (1u128 << 63);
     let nine_byte_max = offset!(9) as u128 + ((1u128 << 64) - 1);
 
@@ -69,7 +71,6 @@ const fn encode_len_vu128(n: u128) -> u8 {
         return 16;
     }
     // For values >= offset!(17), use 18-byte raw encoding
-    // This simplifies disambiguation (no need to distinguish 17 vs 18)
     18
 }
 
@@ -87,526 +88,851 @@ pub(crate) const fn decode_len_vu128(first: u8, second: u8) -> u8 {
             18 // Raw 128-bit encoding
         } else {
             // second byte 0x01-0x7F: leading zeros determine length
-            // 0x40-0x7F (1 leading zero) -> 10
-            // 0x20-0x3F (2 leading zeros) -> 11
-            // ...
-            // 0x01 (7 leading zeros) -> 16
             9 + second.leading_zeros() as u8
         }
     }
 }
 
-/// Encode a u128 in value-length quantity encoding.
+/// Encode a u128 in big-endian VLQ format.
 #[inline(always)]
 #[must_use]
-pub const fn encode_vu128(n: u128) -> Vu128 {
+pub const fn encode_vu128_be(n: u128) -> Vu128<BE> {
     let len = encode_len_vu128(n);
-    let mut out_buf = [0u8; VU128_BUF_SIZE];
 
-    match len {
-        1 => {
-            out_buf[0] = prefix!(1, n as u8);
-        }
+    let out: [u8; 18] = match len {
+        1 => [
+            0x80 | (n as u8),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
         2 => {
-            let val = (n - offset!(2) as u128) as u16;
-            let buf = val.to_be_bytes();
-            out_buf[0] = prefix!(2, buf[0]);
-            out_buf[1] = buf[1];
+            let val = n - offset!(2) as u128;
+            let b = val.to_be_bytes();
+            [
+                0x40 | ((val >> 8) as u8),
+                b[15],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         3 => {
-            let val = ((n - offset!(3) as u128) as u32) << 8;
-            let buf = val.to_be_bytes();
-            out_buf[0] = prefix!(3, buf[0]);
-            out_buf[1] = buf[1];
-            out_buf[2] = buf[2];
+            let val = n - offset!(3) as u128;
+            let b = val.to_be_bytes();
+            [
+                0x20 | ((val >> 16) as u8),
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         4 => {
-            let val = (n - offset!(4) as u128) as u32;
-            let buf = val.to_be_bytes();
-            out_buf[0] = prefix!(4, buf[0]);
-            out_buf[1] = buf[1];
-            out_buf[2] = buf[2];
-            out_buf[3] = buf[3];
+            let val = n - offset!(4) as u128;
+            let b = val.to_be_bytes();
+            [
+                0x10 | ((val >> 24) as u8),
+                b[13],
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         5 => {
-            let val = ((n - offset!(5) as u128) as u64) << (8 * 3);
-            let buf = val.to_be_bytes();
-            out_buf[0] = prefix!(5, buf[0]);
-            out_buf[1] = buf[1];
-            out_buf[2] = buf[2];
-            out_buf[3] = buf[3];
-            out_buf[4] = buf[4];
+            let val = n - offset!(5) as u128;
+            let b = val.to_be_bytes();
+            [
+                0x08 | ((val >> 32) as u8),
+                b[12],
+                b[13],
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         6 => {
-            let val = ((n - offset!(6) as u128) as u64) << (8 * 2);
-            let buf = val.to_be_bytes();
-            out_buf[0] = prefix!(6, buf[0]);
-            out_buf[1] = buf[1];
-            out_buf[2] = buf[2];
-            out_buf[3] = buf[3];
-            out_buf[4] = buf[4];
-            out_buf[5] = buf[5];
+            let val = n - offset!(6) as u128;
+            let b = val.to_be_bytes();
+            [
+                0x04 | ((val >> 40) as u8),
+                b[11],
+                b[12],
+                b[13],
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         7 => {
-            let val = ((n - offset!(7) as u128) as u64) << 8;
-            let buf = val.to_be_bytes();
-            out_buf[0] = prefix!(7, buf[0]);
-            out_buf[1] = buf[1];
-            out_buf[2] = buf[2];
-            out_buf[3] = buf[3];
-            out_buf[4] = buf[4];
-            out_buf[5] = buf[5];
-            out_buf[6] = buf[6];
+            let val = n - offset!(7) as u128;
+            let b = val.to_be_bytes();
+            [
+                0x02 | ((val >> 48) as u8),
+                b[10],
+                b[11],
+                b[12],
+                b[13],
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         8 => {
-            let val = (n - offset!(8) as u128) as u64;
-            let buf = val.to_be_bytes();
-            out_buf[0] = prefix!(8, buf[0]);
-            out_buf[1] = buf[1];
-            out_buf[2] = buf[2];
-            out_buf[3] = buf[3];
-            out_buf[4] = buf[4];
-            out_buf[5] = buf[5];
-            out_buf[6] = buf[6];
-            out_buf[7] = buf[7];
+            let val = n - offset!(8) as u128;
+            let b = val.to_be_bytes();
+            [
+                0x01, b[9], b[10], b[11], b[12], b[13], b[14], b[15], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]
         }
         9 => {
-            // Standard 9-byte: [0x00, d1..d8] where d1 >= 0x80
-            let val = (n - offset!(9) as u128) as u64;
-            let buf = val.to_be_bytes();
-            out_buf[0] = 0x00;
-            out_buf[1] = buf[0];
-            out_buf[2] = buf[1];
-            out_buf[3] = buf[2];
-            out_buf[4] = buf[3];
-            out_buf[5] = buf[4];
-            out_buf[6] = buf[5];
-            out_buf[7] = buf[6];
-            out_buf[8] = buf[7];
+            let val = n - offset!(9) as u128;
+            let b = val.to_be_bytes();
+            [
+                0x00, b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], 0, 0, 0, 0, 0, 0, 0, 0,
+                0,
+            ]
         }
         10 => {
-            // Extended: [0x00, 01xxxxxx, d2..d9] - 6 bits + 8*8 = 70 bits
             let val = n - offset!(10);
-            let buf = val.to_be_bytes();
-            out_buf[0] = 0x00;
-            // Top 6 bits go in byte 1 with prefix, lower 64 bits in bytes 2-9
-            out_buf[1] = prefix!(2, buf[7]); // buf[7] has bits 64-71, we take low 6
-            let mut i = 2;
-            while i < 10 {
-                out_buf[i] = buf[i + 6]; // buf[8..16] -> out_buf[2..10]
-                i += 1;
-            }
+            let b = val.to_be_bytes();
+            [
+                0x00,
+                0x40 | ((val >> 64) as u8),
+                b[8],
+                b[9],
+                b[10],
+                b[11],
+                b[12],
+                b[13],
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         11 => {
-            // Extended: [0x00, 001xxxxx, d2..d10] - 5 bits + 9*8 = 77 bits
             let val = n - offset!(11);
-            let buf = val.to_be_bytes();
-            out_buf[0] = 0x00;
-            out_buf[1] = prefix!(3, buf[6]);
-            let mut i = 2;
-            while i < 11 {
-                out_buf[i] = buf[i + 5]; // buf[7..16] -> out_buf[2..11]
-                i += 1;
-            }
+            let b = val.to_be_bytes();
+            [
+                0x00,
+                0x20 | ((val >> 72) as u8),
+                b[7],
+                b[8],
+                b[9],
+                b[10],
+                b[11],
+                b[12],
+                b[13],
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         12 => {
-            // Extended: [0x00, 0001xxxx, d2..d11] - 4 bits + 10*8 = 84 bits
             let val = n - offset!(12);
-            let buf = val.to_be_bytes();
-            out_buf[0] = 0x00;
-            out_buf[1] = prefix!(4, buf[5]);
-            let mut i = 2;
-            while i < 12 {
-                out_buf[i] = buf[i + 4]; // buf[6..16] -> out_buf[2..12]
-                i += 1;
-            }
+            let b = val.to_be_bytes();
+            [
+                0x00,
+                0x10 | ((val >> 80) as u8),
+                b[6],
+                b[7],
+                b[8],
+                b[9],
+                b[10],
+                b[11],
+                b[12],
+                b[13],
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         13 => {
-            // Extended: [0x00, 00001xxx, d2..d12] - 3 bits + 11*8 = 91 bits
             let val = n - offset!(13);
-            let buf = val.to_be_bytes();
-            out_buf[0] = 0x00;
-            out_buf[1] = prefix!(5, buf[4]);
-            let mut i = 2;
-            while i < 13 {
-                out_buf[i] = buf[i + 3]; // buf[5..16] -> out_buf[2..13]
-                i += 1;
-            }
+            let b = val.to_be_bytes();
+            [
+                0x00,
+                0x08 | ((val >> 88) as u8),
+                b[5],
+                b[6],
+                b[7],
+                b[8],
+                b[9],
+                b[10],
+                b[11],
+                b[12],
+                b[13],
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         14 => {
-            // Extended: [0x00, 000001xx, d2..d13] - 2 bits + 12*8 = 98 bits
             let val = n - offset!(14);
-            let buf = val.to_be_bytes();
-            out_buf[0] = 0x00;
-            out_buf[1] = prefix!(6, buf[3]);
-            let mut i = 2;
-            while i < 14 {
-                out_buf[i] = buf[i + 2]; // buf[4..16] -> out_buf[2..14]
-                i += 1;
-            }
+            let b = val.to_be_bytes();
+            [
+                0x00,
+                0x04 | ((val >> 96) as u8),
+                b[4],
+                b[5],
+                b[6],
+                b[7],
+                b[8],
+                b[9],
+                b[10],
+                b[11],
+                b[12],
+                b[13],
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+                0,
+            ]
         }
         15 => {
-            // Extended: [0x00, 0000001x, d2..d14] - 1 bit + 13*8 = 105 bits
             let val = n - offset!(15);
-            let buf = val.to_be_bytes();
-            out_buf[0] = 0x00;
-            out_buf[1] = prefix!(7, buf[2]);
-            let mut i = 2;
-            while i < 15 {
-                out_buf[i] = buf[i + 1]; // buf[3..16] -> out_buf[2..15]
-                i += 1;
-            }
+            let b = val.to_be_bytes();
+            [
+                0x00,
+                0x02 | ((val >> 104) as u8),
+                b[3],
+                b[4],
+                b[5],
+                b[6],
+                b[7],
+                b[8],
+                b[9],
+                b[10],
+                b[11],
+                b[12],
+                b[13],
+                b[14],
+                b[15],
+                0,
+                0,
+                0,
+            ]
         }
         16 => {
-            // Extended: [0x00, 00000001, d2..d15] - 0 bits + 14*8 = 112 bits
             let val = n - offset!(16);
-            let buf = val.to_be_bytes();
-            out_buf[0] = 0x00;
-            out_buf[1] = prefix!(8, buf[1]);
-            let mut i = 2;
-            while i < 16 {
-                out_buf[i] = buf[i]; // buf[2..16] -> out_buf[2..16]
-                i += 1;
-            }
+            let b = val.to_be_bytes();
+            [
+                0x00, 0x01, b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12],
+                b[13], b[14], b[15], 0, 0,
+            ]
         }
         _ => {
-            // 18 bytes: [0x00, 0x00, d2..d17] - raw 128-bit encoding
-            let buf = n.to_be_bytes();
-            out_buf[0] = 0x00;
-            out_buf[1] = 0x00;
-            let mut i = 2;
-            while i < 18 {
-                out_buf[i] = buf[i - 2]; // buf[0..16] -> out_buf[2..18]
-                i += 1;
-            }
+            let b = n.to_be_bytes();
+            [
+                0x00, 0x00, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10],
+                b[11], b[12], b[13], b[14], b[15],
+            ]
         }
     };
 
-    Vu128(out_buf)
+    Vu128(out, PhantomData)
 }
 
-/// Decode a Vu128 back to a native u128.
+/// Encode a u128 in little-endian VLQ format.
 #[inline(always)]
-pub const fn decode_vu128(n: Vu128) -> u128 {
+#[must_use]
+pub const fn encode_vu128_le(n: u128) -> Vu128<LE> {
+    let len = encode_len_vu128(n);
+
+    let out: [u8; 18] = match len {
+        1 => [
+            0x80 | (n as u8),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+        2 => {
+            let val = n - offset!(2) as u128;
+            let b = val.to_le_bytes();
+            [
+                0x40 | ((val >> 8) as u8),
+                b[0],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        3 => {
+            let val = n - offset!(3) as u128;
+            let b = val.to_le_bytes();
+            [
+                0x20 | ((val >> 16) as u8),
+                b[0],
+                b[1],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        4 => {
+            let val = n - offset!(4) as u128;
+            let b = val.to_le_bytes();
+            [
+                0x10 | ((val >> 24) as u8),
+                b[0],
+                b[1],
+                b[2],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        5 => {
+            let val = n - offset!(5) as u128;
+            let b = val.to_le_bytes();
+            [
+                0x08 | ((val >> 32) as u8),
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        6 => {
+            let val = n - offset!(6) as u128;
+            let b = val.to_le_bytes();
+            [
+                0x04 | ((val >> 40) as u8),
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                b[4],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        7 => {
+            let val = n - offset!(7) as u128;
+            let b = val.to_le_bytes();
+            [
+                0x02 | ((val >> 48) as u8),
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                b[4],
+                b[5],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        8 => {
+            let val = n - offset!(8) as u128;
+            let b = val.to_le_bytes();
+            [
+                0x01, b[0], b[1], b[2], b[3], b[4], b[5], b[6], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]
+        }
+        9 => {
+            let val = n - offset!(9) as u128;
+            let b = val.to_le_bytes();
+            [
+                0x00,
+                (val >> 56) as u8,
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                b[4],
+                b[5],
+                b[6],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        10 => {
+            let val = n - offset!(10);
+            let b = val.to_le_bytes();
+            [
+                0x00,
+                0x40 | ((val >> 64) as u8),
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                b[4],
+                b[5],
+                b[6],
+                b[7],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        11 => {
+            let val = n - offset!(11);
+            let b = val.to_le_bytes();
+            [
+                0x00,
+                0x20 | ((val >> 72) as u8),
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                b[4],
+                b[5],
+                b[6],
+                b[7],
+                b[8],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        12 => {
+            let val = n - offset!(12);
+            let b = val.to_le_bytes();
+            [
+                0x00,
+                0x10 | ((val >> 80) as u8),
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                b[4],
+                b[5],
+                b[6],
+                b[7],
+                b[8],
+                b[9],
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        13 => {
+            let val = n - offset!(13);
+            let b = val.to_le_bytes();
+            [
+                0x00,
+                0x08 | ((val >> 88) as u8),
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                b[4],
+                b[5],
+                b[6],
+                b[7],
+                b[8],
+                b[9],
+                b[10],
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        14 => {
+            let val = n - offset!(14);
+            let b = val.to_le_bytes();
+            [
+                0x00,
+                0x04 | ((val >> 96) as u8),
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                b[4],
+                b[5],
+                b[6],
+                b[7],
+                b[8],
+                b[9],
+                b[10],
+                b[11],
+                0,
+                0,
+                0,
+                0,
+            ]
+        }
+        15 => {
+            let val = n - offset!(15);
+            let b = val.to_le_bytes();
+            [
+                0x00,
+                0x02 | ((val >> 104) as u8),
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                b[4],
+                b[5],
+                b[6],
+                b[7],
+                b[8],
+                b[9],
+                b[10],
+                b[11],
+                b[12],
+                0,
+                0,
+                0,
+            ]
+        }
+        16 => {
+            let val = n - offset!(16);
+            let b = val.to_le_bytes();
+            [
+                0x00, 0x01, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10],
+                b[11], b[12], b[13], 0, 0,
+            ]
+        }
+        _ => {
+            let b = n.to_le_bytes();
+            [
+                0x00, 0x00, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10],
+                b[11], b[12], b[13], b[14], b[15],
+            ]
+        }
+    };
+
+    Vu128(out, PhantomData)
+}
+
+/// Decode a big-endian VLQ back to u128.
+#[inline(always)]
+pub const fn decode_vu128_be(n: Vu128<BE>) -> u128 {
     let len = n.len();
     let b = n.bytes();
 
+    // Load first 8 bytes as u64 for cases 1-8
+    let raw = u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+
     match len {
-        1 => unprefix!(1, b[0] as u128),
-        2 => {
-            u128::from_le_bytes([
-                b[1],
-                unprefix!(2, b[0]),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(2) as u128
-        }
-        3 => {
-            u128::from_le_bytes([
-                b[2],
-                b[1],
-                unprefix!(3, b[0]),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(3) as u128
-        }
-        4 => {
-            u128::from_le_bytes([
-                b[3],
-                b[2],
-                b[1],
-                unprefix!(4, b[0]),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(4) as u128
-        }
-        5 => {
-            u128::from_le_bytes([
-                b[4],
-                b[3],
-                b[2],
-                b[1],
-                unprefix!(5, b[0]),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(5) as u128
-        }
-        6 => {
-            u128::from_le_bytes([
-                b[5],
-                b[4],
-                b[3],
-                b[2],
-                b[1],
-                unprefix!(6, b[0]),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(6) as u128
-        }
-        7 => {
-            u128::from_le_bytes([
-                b[6],
-                b[5],
-                b[4],
-                b[3],
-                b[2],
-                b[1],
-                unprefix!(7, b[0]),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(7) as u128
-        }
-        8 => {
-            u128::from_le_bytes([
-                b[7],
-                b[6],
-                b[5],
-                b[4],
-                b[3],
-                b[2],
-                b[1],
-                unprefix!(8, b[0]),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(8) as u128
-        }
+        1 => ((raw >> 56) & 0x7F) as u128,
+        2 => (((raw >> 48) & 0x3FFF) as u128) + offset!(2) as u128,
+        3 => (((raw >> 40) & 0x1F_FFFF) as u128) + offset!(3) as u128,
+        4 => (((raw >> 32) & 0x0FFF_FFFF) as u128) + offset!(4) as u128,
+        5 => (((raw >> 24) & 0x07_FFFF_FFFF) as u128) + offset!(5) as u128,
+        6 => (((raw >> 16) & 0x03FF_FFFF_FFFF) as u128) + offset!(6) as u128,
+        7 => (((raw >> 8) & 0x01_FFFF_FFFF_FFFF) as u128) + offset!(7) as u128,
+        8 => ((raw & 0x00FF_FFFF_FFFF_FFFF) as u128) + offset!(8) as u128,
         9 => {
-            // [0x00, d1..d8] - 64 bits of data
-            u128::from_le_bytes([
-                b[8], b[7], b[6], b[5], b[4], b[3], b[2], b[1], 0, 0, 0, 0, 0, 0, 0, 0,
-            ]) + offset!(9) as u128
+            (u64::from_be_bytes([b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8]]) as u128)
+                + offset!(9) as u128
         }
         10 => {
-            // [0x00, 01xxxxxx, d2..d9] - 6 bits in b[1], 64 bits in b[2..10]
-            u128::from_le_bytes([
-                b[9],
-                b[8],
-                b[7],
-                b[6],
-                b[5],
-                b[4],
-                b[3],
-                b[2],
-                unprefix!(2, b[1]),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(10)
+            let data = u128::from_be_bytes([0, 0, 0, 0, 0, 0, b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], 0, 0]);
+            ((((b[1] & 0x3F) as u128) << 64) | (data >> 16)) + offset!(10)
         }
         11 => {
-            // [0x00, 001xxxxx, d2..d10] - 5 bits + 72 bits
-            u128::from_le_bytes([
-                b[10],
-                b[9],
-                b[8],
-                b[7],
-                b[6],
-                b[5],
-                b[4],
-                b[3],
-                b[2],
-                unprefix!(3, b[1]),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(11)
+            let data = u128::from_be_bytes([0, 0, 0, 0, 0, b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], 0, 0]);
+            ((((b[1] & 0x1F) as u128) << 72) | (data >> 16)) + offset!(11)
         }
         12 => {
-            // [0x00, 0001xxxx, d2..d11] - 4 bits + 80 bits
-            u128::from_le_bytes([
-                b[11],
-                b[10],
-                b[9],
-                b[8],
-                b[7],
-                b[6],
-                b[5],
-                b[4],
-                b[3],
-                b[2],
-                unprefix!(4, b[1]),
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(12)
+            let data = u128::from_be_bytes([0, 0, 0, 0, b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], 0, 0]);
+            ((((b[1] & 0x0F) as u128) << 80) | (data >> 16)) + offset!(12)
         }
         13 => {
-            // [0x00, 00001xxx, d2..d12] - 3 bits + 88 bits
-            u128::from_le_bytes([
-                b[12],
-                b[11],
-                b[10],
-                b[9],
-                b[8],
-                b[7],
-                b[6],
-                b[5],
-                b[4],
-                b[3],
-                b[2],
-                unprefix!(5, b[1]),
-                0,
-                0,
-                0,
-                0,
-            ]) + offset!(13)
+            let data = u128::from_be_bytes([0, 0, 0, b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], 0, 0]);
+            ((((b[1] & 0x07) as u128) << 88) | (data >> 16)) + offset!(13)
         }
         14 => {
-            // [0x00, 000001xx, d2..d13] - 2 bits + 96 bits
-            u128::from_le_bytes([
-                b[13],
-                b[12],
-                b[11],
-                b[10],
-                b[9],
-                b[8],
-                b[7],
-                b[6],
-                b[5],
-                b[4],
-                b[3],
-                b[2],
-                unprefix!(6, b[1]),
-                0,
-                0,
-                0,
-            ]) + offset!(14)
+            let data = u128::from_be_bytes([0, 0, b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], 0, 0]);
+            ((((b[1] & 0x03) as u128) << 96) | (data >> 16)) + offset!(14)
         }
         15 => {
-            // [0x00, 0000001x, d2..d14] - 1 bit + 104 bits
-            u128::from_le_bytes([
-                b[14],
-                b[13],
-                b[12],
-                b[11],
-                b[10],
-                b[9],
-                b[8],
-                b[7],
-                b[6],
-                b[5],
-                b[4],
-                b[3],
-                b[2],
-                unprefix!(7, b[1]),
-                0,
-                0,
-            ]) + offset!(15)
+            let data = u128::from_be_bytes([0, b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], 0, 0]);
+            ((((b[1] & 0x01) as u128) << 104) | (data >> 16)) + offset!(15)
         }
         16 => {
-            // [0x00, 00000001, d2..d15] - 0 bits + 112 bits
-            u128::from_le_bytes([
-                b[15], b[14], b[13], b[12], b[11], b[10], b[9], b[8], b[7], b[6], b[5], b[4], b[3],
-                b[2], 0, // byte 1 has no data bits
-                0,
-            ]) + offset!(16)
+            let data = u128::from_be_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], 0, 0]);
+            (data >> 16) + offset!(16)
         }
         _ => {
-            // 18 bytes: [0x00, 0x00, d2..d17] - raw 128-bit encoding
-            u128::from_le_bytes([
-                b[17], b[16], b[15], b[14], b[13], b[12], b[11], b[10], b[9], b[8], b[7], b[6],
-                b[5], b[4], b[3], b[2],
-            ])
+            u128::from_be_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], b[16], b[17]])
         }
     }
 }
 
-/// An unsigned 128-bit integer in value-length quantity encoding.
+/// Decode a little-endian VLQ back to u128.
+#[inline(always)]
+pub const fn decode_vu128_le(n: Vu128<LE>) -> u128 {
+    let len = n.len();
+    let b = n.bytes();
+
+    // Data bytes (after prefix) are in LE order starting at b[1]
+    let data = u64::from_le_bytes([b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8]]);
+
+    match len {
+        1 => (b[0] & 0x7F) as u128,
+        2 => ((((b[0] & 0x3F) as u128) << 8) | (data & 0xFF) as u128) + offset!(2) as u128,
+        3 => ((((b[0] & 0x1F) as u128) << 16) | (data & 0xFFFF) as u128) + offset!(3) as u128,
+        4 => ((((b[0] & 0x0F) as u128) << 24) | (data & 0xFF_FFFF) as u128) + offset!(4) as u128,
+        5 => ((((b[0] & 0x07) as u128) << 32) | (data & 0xFFFF_FFFF) as u128) + offset!(5) as u128,
+        6 => ((((b[0] & 0x03) as u128) << 40) | (data & 0xFF_FFFF_FFFF) as u128) + offset!(6) as u128,
+        7 => ((((b[0] & 0x01) as u128) << 48) | (data & 0xFFFF_FFFF_FFFF) as u128) + offset!(7) as u128,
+        8 => ((data & 0xFF_FFFF_FFFF_FFFF) as u128) + offset!(8) as u128,
+        9 => {
+            let high = (b[1] as u128) << 56;
+            let low = u64::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], 0]) as u128;
+            (high | low) + offset!(9) as u128
+        }
+        10 => {
+            let lo = u128::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], 0, 0, 0, 0, 0, 0, 0, 0]);
+            ((((b[1] & 0x3F) as u128) << 64) | lo) + offset!(10)
+        }
+        11 => {
+            let lo = u128::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], 0, 0, 0, 0, 0, 0, 0]);
+            ((((b[1] & 0x1F) as u128) << 72) | lo) + offset!(11)
+        }
+        12 => {
+            let lo = u128::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], 0, 0, 0, 0, 0, 0]);
+            ((((b[1] & 0x0F) as u128) << 80) | lo) + offset!(12)
+        }
+        13 => {
+            let lo = u128::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], 0, 0, 0, 0, 0]);
+            ((((b[1] & 0x07) as u128) << 88) | lo) + offset!(13)
+        }
+        14 => {
+            let lo = u128::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], 0, 0, 0, 0]);
+            ((((b[1] & 0x03) as u128) << 96) | lo) + offset!(14)
+        }
+        15 => {
+            let lo = u128::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], 0, 0, 0]);
+            ((((b[1] & 0x01) as u128) << 104) | lo) + offset!(15)
+        }
+        16 => {
+            let lo = u128::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], 0, 0]);
+            lo + offset!(16)
+        }
+        _ => {
+            u128::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], b[16], b[17]])
+        }
+    }
+}
+
+/// An unsigned 128-bit integer in variable-length quantity encoding.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct Vu128(pub(crate) [u8; VU128_BUF_SIZE]);
+pub struct Vu128<E>(pub(crate) [u8; VU128_BUF_SIZE], pub(crate) PhantomData<E>);
 
 #[allow(clippy::len_without_is_empty)]
-impl Vu128 {
-    /// Construct a new VLQ instance from the given `u128`.
-    #[inline(always)]
-    #[must_use]
-    pub const fn new(value: u128) -> Vu128 {
-        encode_vu128(value)
-    }
-
+impl<E> Vu128<E> {
     /// Length of the internal representation in bytes.
     #[inline(always)]
     pub const fn len(&self) -> u8 {
         decode_len_vu128(self.0[0], self.0[1])
-    }
-
-    /// Retrieve the stored number as `u128`.
-    #[inline(always)]
-    pub const fn get(&self) -> u128 {
-        decode_vu128(*self)
     }
 
     /// Get the raw byte representation of the VLQ instance.
@@ -614,33 +940,73 @@ impl Vu128 {
     pub const fn bytes(&self) -> [u8; 18] {
         self.0
     }
+}
 
-    /// Get the serialized representation of the VLQ as a slice.
+impl Vu128<BE> {
+    /// Construct a new big-endian VLQ instance from the given `u128`.
     #[inline(always)]
-    pub fn as_slice(&self) -> &[u8] {
-        &self.0[..(self.len() as usize)]
+    #[must_use]
+    pub const fn new(value: u128) -> Vu128<BE> {
+        encode_vu128_be(value)
+    }
+
+    /// Retrieve the stored number as `u128`.
+    #[inline(always)]
+    pub const fn get(&self) -> u128 {
+        decode_vu128_be(*self)
     }
 }
 
-impl From<u128> for Vu128 {
+impl Vu128<LE> {
+    /// Construct a new little-endian VLQ instance from the given `u128`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(value: u128) -> Vu128<LE> {
+        encode_vu128_le(value)
+    }
+
+    /// Retrieve the stored number as `u128`.
+    #[inline(always)]
+    pub const fn get(&self) -> u128 {
+        decode_vu128_le(*self)
+    }
+}
+
+impl From<u128> for Vu128<BE> {
     fn from(n: u128) -> Self {
-        encode_vu128(n)
+        encode_vu128_be(n)
     }
 }
 
-impl From<Vu128> for u128 {
-    fn from(n: Vu128) -> Self {
-        decode_vu128(n)
+impl From<u128> for Vu128<LE> {
+    fn from(n: u128) -> Self {
+        encode_vu128_le(n)
     }
 }
 
-impl Display for Vu128 {
+impl From<Vu128<BE>> for u128 {
+    fn from(n: Vu128<BE>) -> Self {
+        decode_vu128_be(n)
+    }
+}
+
+impl From<Vu128<LE>> for u128 {
+    fn from(n: Vu128<LE>) -> Self {
+        decode_vu128_le(n)
+    }
+}
+
+impl<E> Display for Vu128<E>
+where
+    Vu128<E>: Copy,
+    u128: From<Vu128<E>>,
+{
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        Display::fmt(&self.get(), f)
+        Display::fmt(&u128::from(*self), f)
     }
 }
 
-impl Debug for Vu128 {
+impl<E> Debug for Vu128<E> {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         let len = self.len() as usize - 1;
         write!(f, "Vu128(0b")?;

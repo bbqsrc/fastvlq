@@ -7,6 +7,9 @@ A fast variant of [variable-length quantity](https://en.wikipedia.org/wiki/Varia
 
 The algorithm uses leading zeros in the first byte to determine how many bytes are required for decoding, allowing the length to be known immediately without parsing the entire value.
 
+> [!WARNING]  
+> The encoding of this format has changed since version 1! Use **v1** if you need to encode or decode the previous encoding.
+
 ## Supported Types
 
 | Type | Max Bytes |
