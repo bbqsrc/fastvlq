@@ -1,6 +1,6 @@
 #[cfg(not(any(
-    target_arch = "aarch64",
-    all(target_arch = "x86_64", target_feature = "lzcnt")
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 macro_rules! offset {
     (1) => {

@@ -44,6 +44,8 @@ mod vu128;
 mod vu32;
 mod vu64;
 
+pub mod batch;
+
 #[cfg(any(test, feature = "bench"))]
 #[doc(hidden)]
 pub mod uleb128;
@@ -58,12 +60,21 @@ use std::io::{Read, Result as IoResult, Write};
 // Unsigned types
 pub use vu32::{Vu32, decode_vu32, decode_vu32_slice, encode_vu32};
 pub use vu64::{Vu64, decode_vu64, decode_vu64_slice, encode_vu64};
-pub use vu128::{Vu128, decode_vu128, encode_vu128};
+pub use vu128::{Vu128, decode_vu128, decode_vu128_slice, encode_vu128};
+
+// Batch encoding
+pub use batch::{encode_vu64_batch, encode_vu64_batch_alloc};
 
 // Signed types
-pub use vi32::{Vi32, decode_vi32, encode_vi32, zigzag_decode_i32, zigzag_encode_i32};
-pub use vi64::{Vi64, decode_vi64, encode_vi64, zigzag_decode_i64, zigzag_encode_i64};
-pub use vi128::{Vi128, decode_vi128, encode_vi128, zigzag_decode_i128, zigzag_encode_i128};
+pub use vi32::{
+    Vi32, decode_vi32, decode_vi32_slice, encode_vi32, zigzag_decode_i32, zigzag_encode_i32,
+};
+pub use vi64::{
+    Vi64, decode_vi64, decode_vi64_slice, encode_vi64, zigzag_decode_i64, zigzag_encode_i64,
+};
+pub use vi128::{
+    Vi128, decode_vi128, decode_vi128_slice, encode_vi128, zigzag_decode_i128, zigzag_encode_i128,
+};
 
 #[cfg(any(feature = "async-futures", feature = "async-tokio"))]
 pub use ext::{AsyncReadVlqExt, AsyncWriteVlqExt};
@@ -147,24 +158,34 @@ impl<R: Read> ReadVlqExt for R {
         let mut buf = [0u8; vu128::VU128_BUF_SIZE];
         self.read_exact(&mut buf[0..1])?;
         let p1 = buf[0];
-        // Need second byte to determine extended length
+
         if p1 == 0 {
+            // Extended format (10-18 bytes) - need second byte for length
             self.read_exact(&mut buf[1..2])?;
+            let p2 = buf[1];
+            let len = vu128::decode_len_vu128(p1, p2) as usize;
+            if len > 2 {
+                self.read_exact(&mut buf[2..len])?;
+            }
+            let mut data_buf = [0u8; 16];
+            if len > 2 {
+                data_buf[..(len - 2)].copy_from_slice(&buf[2..len]);
+            }
+            let data = u128::from_le_bytes(data_buf);
+            Ok(decode_vu128(vu128::Vu128(p1, p2, data)))
+        } else {
+            // Standard format (len 1-8) - data goes in self.2
+            let len = vu128::decode_len_vu128(p1, 0) as usize;
+            if len > 1 {
+                self.read_exact(&mut buf[1..len])?;
+            }
+            let mut data_buf = [0u8; 16];
+            if len > 1 {
+                data_buf[..(len - 1)].copy_from_slice(&buf[1..len]);
+            }
+            let packed = u128::from_le_bytes(data_buf);
+            Ok(decode_vu128(vu128::Vu128(p1, 0, packed)))
         }
-        let p2 = buf[1];
-        let len = vu128::decode_len_vu128(p1, p2) as usize;
-        if len > 2 {
-            self.read_exact(&mut buf[2..len])?;
-        } else if len == 2 && p1 != 0 {
-            self.read_exact(&mut buf[1..2])?;
-        }
-        // Pack data bytes into u128 (LE order)
-        let mut data_buf = [0u8; 16];
-        if len > 2 {
-            data_buf[..(len - 2)].copy_from_slice(&buf[2..len]);
-        }
-        let data = u128::from_le_bytes(data_buf);
-        Ok(decode_vu128(vu128::Vu128(p1, buf[1], data)))
     }
 
     fn read_vi128(&mut self) -> IoResult<i128> {

@@ -11,7 +11,7 @@ pub(crate) const fn decode_len_vu64(n: u8) -> u8 {
 }
 
 /// Encode a u64 in VLQ format using aarch64 inline asm.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 fn encode_vu64_asm(n: u64) -> (u8, u64) {
     let prefix: u64;
@@ -166,7 +166,7 @@ fn encode_vu64_asm(n: u64) -> (u8, u64) {
 /// Encode a u64 in VLQ format.
 ///
 /// Returns Vu64(prefix, packed) where packed contains data bytes in LE order.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vu64(n: u64) -> Vu64 {
     let (prefix, data) = encode_vu64_asm(n);
@@ -174,7 +174,7 @@ pub fn encode_vu64(n: u64) -> Vu64 {
 }
 
 /// Encode a u64 in VLQ format using x86_64 inline asm.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 fn encode_vu64_asm_x86(n: u64) -> (u8, u64) {
     let prefix: u64;
@@ -318,7 +318,7 @@ fn encode_vu64_asm_x86(n: u64) -> (u8, u64) {
 /// Encode a u64 in VLQ format.
 ///
 /// Returns Vu64(prefix, packed) where packed contains data bytes in LE order.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vu64(n: u64) -> Vu64 {
     let (prefix, data) = encode_vu64_asm_x86(n);
@@ -329,8 +329,8 @@ pub fn encode_vu64(n: u64) -> Vu64 {
 ///
 /// Returns Vu64(prefix, packed) where packed contains data bytes in LE order.
 #[cfg(not(any(
-    target_arch = "aarch64",
-    all(target_arch = "x86_64", target_feature = "lzcnt")
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 #[inline(always)]
 pub const fn encode_vu64(n: u64) -> Vu64 {
@@ -374,8 +374,8 @@ pub const fn encode_vu64(n: u64) -> Vu64 {
 
 // Lookup tables for decode (fallback when no asm available)
 #[cfg(not(any(
-    target_arch = "aarch64",
-    all(target_arch = "x86_64", target_feature = "lzcnt")
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 const OFFSETS: [u64; 10] = [
     0,
@@ -391,8 +391,8 @@ const OFFSETS: [u64; 10] = [
 ];
 
 #[cfg(not(any(
-    target_arch = "aarch64",
-    all(target_arch = "x86_64", target_feature = "lzcnt")
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 const MASKS_LE: [u8; 10] = [
     0, 0x7F, // len=1: 7 bits
@@ -408,7 +408,7 @@ const MASKS_LE: [u8; 10] = [
 
 /// Decode a little-endian VLQ using branchless aarch64 inline asm.
 /// No memory loads - all values computed or from jump table.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 fn decode_vu64_asm(prefix: u8, data: u64) -> u64 {
     let result: u64;
@@ -517,14 +517,14 @@ fn decode_vu64_asm(prefix: u8, data: u64) -> u64 {
 }
 
 /// Decode a VLQ back to u64.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn decode_vu64(n: Vu64) -> u64 {
     decode_vu64_asm(n.0, n.1)
 }
 
 /// Decode a little-endian VLQ using x86_64 inline asm with LZCNT.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 fn decode_vu64_asm_x86(prefix: u8, data: u64) -> u64 {
     let result: u64;
@@ -624,7 +624,7 @@ fn decode_vu64_asm_x86(prefix: u8, data: u64) -> u64 {
 }
 
 /// Decode a VLQ back to u64.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn decode_vu64(n: Vu64) -> u64 {
     decode_vu64_asm_x86(n.0, n.1)
@@ -632,8 +632,8 @@ pub fn decode_vu64(n: Vu64) -> u64 {
 
 /// Decode a VLQ back to u64.
 #[cfg(not(any(
-    target_arch = "aarch64",
-    all(target_arch = "x86_64", target_feature = "lzcnt")
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 #[inline(always)]
 pub const fn decode_vu64(n: Vu64) -> u64 {
@@ -655,7 +655,7 @@ pub const fn decode_vu64(n: Vu64) -> u64 {
 /// Decode a u64 from a byte slice.
 ///
 /// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
     let first = *data.first()?;
@@ -810,7 +810,7 @@ pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
 /// Decode a u64 from a byte slice.
 ///
 /// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 #[inline(always)]
 pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
     let first = *data.first()?;

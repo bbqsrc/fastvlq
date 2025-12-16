@@ -24,6 +24,11 @@ name = "vlq"
 harness = false
 required-features = ["bench"]
 
+[[bench]]
+name = "comparison"
+harness = false
+required-features = ["bench"]
+
 [features]
 default = ["std"]
 std = []

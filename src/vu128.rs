@@ -30,8 +30,8 @@ pub(crate) const fn decode_len_vu128(first: u8, second: u8) -> u8 {
 
 /// Determine encoded length for u128.
 #[cfg(not(any(
-    target_arch = "aarch64",
-    all(target_arch = "x86_64", target_feature = "lzcnt")
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 #[inline(always)]
 const fn encode_len_vu128(n: u128) -> u8 {
@@ -95,7 +95,7 @@ const fn encode_len_vu128(n: u128) -> u8 {
 }
 
 /// Encode a u128 in VLQ format using aarch64 inline asm.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 fn encode_vu128_asm(n: u128) -> (u8, u8, u128) {
     let n_lo = n as u64;
@@ -529,7 +529,7 @@ fn encode_vu128_asm(n: u128) -> (u8, u8, u128) {
 }
 
 /// Encode a u128 in VLQ format.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vu128(n: u128) -> Vu128 {
     let (p1, p2, data) = encode_vu128_asm(n);
@@ -537,7 +537,7 @@ pub fn encode_vu128(n: u128) -> Vu128 {
 }
 
 /// Encode a u128 in VLQ format using x86_64 inline asm.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
     let n_lo = n as u64;
@@ -908,7 +908,7 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
 }
 
 /// Encode a u128 in VLQ format.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vu128(n: u128) -> Vu128 {
     let (p1, p2, data) = encode_vu128_asm_x86(n);
@@ -917,8 +917,8 @@ pub fn encode_vu128(n: u128) -> Vu128 {
 
 /// Encode a u128 in VLQ format (fallback).
 #[cfg(not(any(
-    target_arch = "aarch64",
-    all(target_arch = "x86_64", target_feature = "lzcnt")
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 #[inline(always)]
 pub const fn encode_vu128(n: u128) -> Vu128 {
@@ -995,7 +995,7 @@ pub const fn encode_vu128(n: u128) -> Vu128 {
 }
 
 /// Decode a VLQ back to u128 using aarch64 asm.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 fn decode_vu128_asm(p1: u8, p2: u8, data: u128) -> u128 {
     let data_lo = data as u64;
@@ -1306,14 +1306,14 @@ fn decode_vu128_asm(p1: u8, p2: u8, data: u128) -> u128 {
 }
 
 /// Decode a VLQ back to u128.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn decode_vu128(n: Vu128) -> u128 {
     decode_vu128_asm(n.0, n.1, n.2)
 }
 
 /// Decode a VLQ back to u128 using x86_64 asm.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 fn decode_vu128_asm_x86(p1: u8, p2: u8, data: u128) -> u128 {
     let data_lo = data as u64;
@@ -1621,7 +1621,7 @@ fn decode_vu128_asm_x86(p1: u8, p2: u8, data: u128) -> u128 {
 }
 
 /// Decode a VLQ back to u128.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn decode_vu128(n: Vu128) -> u128 {
     decode_vu128_asm_x86(n.0, n.1, n.2)
@@ -1629,8 +1629,8 @@ pub fn decode_vu128(n: Vu128) -> u128 {
 
 /// Decode a VLQ back to u128.
 #[cfg(not(any(
-    target_arch = "aarch64",
-    all(target_arch = "x86_64", target_feature = "lzcnt")
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 #[inline(always)]
 pub const fn decode_vu128(n: Vu128) -> u128 {
@@ -1661,6 +1661,41 @@ pub const fn decode_vu128(n: Vu128) -> u128 {
         15 => ((((p2 & 0x01) as u128) << 104) | data) + offset!(15),
         16 => data + offset!(16),
         _ => data, // len=18: raw
+    }
+}
+
+/// Decode a u128 from a byte slice.
+///
+/// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
+#[inline(always)]
+pub fn decode_vu128_slice(data: &[u8]) -> Option<(u128, usize)> {
+    let p1 = *data.first()?;
+
+    if p1 == 0 {
+        // Extended format (len 9+) - need second byte for length
+        let p2 = *data.get(1)?;
+        let len = decode_len_vu128(p1, p2) as usize;
+        if data.len() < len {
+            return None;
+        }
+        let mut data_buf = [0u8; 16];
+        if len > 2 {
+            data_buf[..(len - 2)].copy_from_slice(&data[2..len]);
+        }
+        let packed = u128::from_le_bytes(data_buf);
+        Some((decode_vu128(Vu128(p1, p2, packed)), len))
+    } else {
+        // Standard format (len 1-8) - data goes in self.2
+        let len = decode_len_vu128(p1, 0) as usize;
+        if data.len() < len {
+            return None;
+        }
+        let mut data_buf = [0u8; 16];
+        if len > 1 {
+            data_buf[..(len - 1)].copy_from_slice(&data[1..len]);
+        }
+        let packed = u128::from_le_bytes(data_buf);
+        Some((decode_vu128(Vu128(p1, 0, packed)), len))
     }
 }
 
@@ -1704,19 +1739,26 @@ impl Vu128 {
             return out;
         }
 
-        out[1] = self.1;
-
-        if len == 2 {
-            return out;
-        }
-
-        // Copy data bytes
-        let data = self.2.to_le_bytes();
-        let data_bytes = len - 2;
-        let mut i = 0;
-        while i < data_bytes && i < 16 {
-            out[i + 2] = data[i];
-            i += 1;
+        if len <= 8 {
+            // Standard format (len 2-8): data bytes from self.2, p2 unused
+            let data = self.2.to_le_bytes();
+            let mut i = 0;
+            while i < len - 1 && i < 16 {
+                out[i + 1] = data[i];
+                i += 1;
+            }
+        } else {
+            // Extended format (len 9+): p2 is significant
+            out[1] = self.1;
+            if len > 2 {
+                let data = self.2.to_le_bytes();
+                let data_bytes = len - 2;
+                let mut i = 0;
+                while i < data_bytes && i < 16 {
+                    out[i + 2] = data[i];
+                    i += 1;
+                }
+            }
         }
 
         out

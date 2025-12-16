@@ -193,3 +193,41 @@ fn vu64_bytes_roundtrip() {
         assert_eq!(consumed, len, "consumed length mismatch for {}", val);
     }
 }
+
+#[test]
+fn vu128_bytes_roundtrip() {
+    // Test that bytes() produces correct wire format by decoding from slice
+    let test_values: &[u128] = &[
+        0,
+        1,
+        127,                  // max 1-byte
+        128,                  // min 2-byte
+        500,                  // 2-byte
+        16511,                // max 2-byte
+        16512,                // min 3-byte
+        100_000,              // 3-byte
+        u32::MAX as u128,     // 5-byte
+        u64::MAX as u128,     // 9-byte (max for standard format)
+        u64::MAX as u128 + 1, // 10-byte (min for extended format)
+        u128::MAX / 2,        // large extended
+        u128::MAX,            // max
+    ];
+
+    for &val in test_values {
+        let encoded = encode_vu128(val);
+        let bytes = encoded.bytes();
+        let len = encoded.len() as usize;
+
+        // Decode from slice should match original value
+        let (decoded, consumed) = decode_vu128_slice(&bytes).unwrap();
+        assert_eq!(
+            decoded,
+            val,
+            "bytes() roundtrip failed for {}: got {}, bytes={:02x?}",
+            val,
+            decoded,
+            &bytes[..len]
+        );
+        assert_eq!(consumed, len, "consumed length mismatch for {}", val);
+    }
+}

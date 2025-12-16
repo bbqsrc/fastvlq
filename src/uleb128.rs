@@ -6,7 +6,7 @@ pub const ULEB128_U64_BUF_SIZE: usize = 10;
 /// Encode a u32 as ULEB128.
 ///
 /// Returns the number of bytes written.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn encode_uleb128_u32(value: u32, buf: &mut [u8; ULEB128_U32_BUF_SIZE]) -> usize {
     let len: usize;
@@ -14,62 +14,68 @@ pub fn encode_uleb128_u32(value: u32, buf: &mut [u8; ULEB128_U32_BUF_SIZE]) -> u
     // SAFETY: We write at most 5 bytes, buf is exactly 5 bytes.
     unsafe {
         core::arch::asm!(
-            // Calculate byte count: (32 - clz(value | 1) + 6) / 7
-            "orr    w4, w0, #1",
-            "clz    w4, w4",
-            "mov    w5, #32",
-            "sub    w4, w5, w4",        // bit_width = 32 - clz
-            "add    w4, w4, #6",        // + 6 for ceiling
-            "mov    w5, #7",
-            "udiv   w4, w4, w5",        // byte_count = (bit_width + 6) / 7
+            // Comparison chain to determine length (no division!)
+            // LEB128 thresholds: 128, 16384, 2097152, 268435456
+            "cmp    w0, #128",
+            "b.lo   100f",              // len=1: 0-127
 
-            // Jump table by byte count (1-5), 16-byte entries
-            "adr    x10, 100f",
-            "sub    w11, w4, #1",
-            "add    x10, x10, w11, uxtw #4",  // 16-byte entries
-            "br     x10",
+            "mov    w4, #0x4000",
+            "cmp    w0, w4",
+            "b.lo   200f",              // len=2: 128-16383
 
-            // len=1 (values 0-127) - 4 instructions = 16 bytes
+            "mov    w4, #0x200000",
+            "cmp    w0, w4",
+            "b.lo   300f",              // len=3: 16384-2097151
+
+            "mov    w4, #0x10000000",
+            "cmp    w0, w4",
+            "b.lo   400f",              // len=4: 2097152-268435455
+
+            // len=5: 268435456-4294967295
+            "and    w5, w0, #0x7F",
+            "orr    w5, w5, #0x80",
+            "strb   w5, [x1]",
+            "lsr    w0, w0, #7",
+            "and    w5, w0, #0x7F",
+            "orr    w5, w5, #0x80",
+            "strb   w5, [x1, #1]",
+            "lsr    w0, w0, #7",
+            "and    w5, w0, #0x7F",
+            "orr    w5, w5, #0x80",
+            "strb   w5, [x1, #2]",
+            "lsr    w0, w0, #7",
+            "and    w5, w0, #0x7F",
+            "orr    w5, w5, #0x80",
+            "strb   w5, [x1, #3]",
+            "lsr    w0, w0, #7",
+            "and    w5, w0, #0x0F",     // Only 4 bits for byte 5
+            "strb   w5, [x1, #4]",
+            "mov    w2, #5",
+            "b      900f",
+
+            // len=1: values 0-127
             "100:",
             "and    w5, w0, #0x7F",
             "strb   w5, [x1]",
             "mov    w2, #1",
-            "b      200f",
+            "b      900f",
 
-            // len=2 (values 128-16383)
+            // len=2: values 128-16383
+            "200:",
             "and    w5, w0, #0x7F",
             "orr    w5, w5, #0x80",
             "strb   w5, [x1]",
-            "b      102f",
-
-            // len=3 (values 16384-2097151)
-            "and    w5, w0, #0x7F",
-            "orr    w5, w5, #0x80",
-            "strb   w5, [x1]",
-            "b      103f",
-
-            // len=4 (values 2097152-268435455)
-            "and    w5, w0, #0x7F",
-            "orr    w5, w5, #0x80",
-            "strb   w5, [x1]",
-            "b      104f",
-
-            // len=5 (values 268435456-4294967295)
-            "and    w5, w0, #0x7F",
-            "orr    w5, w5, #0x80",
-            "strb   w5, [x1]",
-            "b      105f",
-
-            // len=2 continuation
-            "102:",
             "lsr    w0, w0, #7",
             "and    w5, w0, #0x7F",
             "strb   w5, [x1, #1]",
             "mov    w2, #2",
-            "b      200f",
+            "b      900f",
 
-            // len=3 continuation
-            "103:",
+            // len=3: values 16384-2097151
+            "300:",
+            "and    w5, w0, #0x7F",
+            "orr    w5, w5, #0x80",
+            "strb   w5, [x1]",
             "lsr    w0, w0, #7",
             "and    w5, w0, #0x7F",
             "orr    w5, w5, #0x80",
@@ -78,10 +84,13 @@ pub fn encode_uleb128_u32(value: u32, buf: &mut [u8; ULEB128_U32_BUF_SIZE]) -> u
             "and    w5, w0, #0x7F",
             "strb   w5, [x1, #2]",
             "mov    w2, #3",
-            "b      200f",
+            "b      900f",
 
-            // len=4 continuation
-            "104:",
+            // len=4: values 2097152-268435455
+            "400:",
+            "and    w5, w0, #0x7F",
+            "orr    w5, w5, #0x80",
+            "strb   w5, [x1]",
             "lsr    w0, w0, #7",
             "and    w5, w0, #0x7F",
             "orr    w5, w5, #0x80",
@@ -94,36 +103,14 @@ pub fn encode_uleb128_u32(value: u32, buf: &mut [u8; ULEB128_U32_BUF_SIZE]) -> u
             "and    w5, w0, #0x7F",
             "strb   w5, [x1, #3]",
             "mov    w2, #4",
-            "b      200f",
 
-            // len=5 continuation
-            "105:",
-            "lsr    w0, w0, #7",
-            "and    w5, w0, #0x7F",
-            "orr    w5, w5, #0x80",
-            "strb   w5, [x1, #1]",
-            "lsr    w0, w0, #7",
-            "and    w5, w0, #0x7F",
-            "orr    w5, w5, #0x80",
-            "strb   w5, [x1, #2]",
-            "lsr    w0, w0, #7",
-            "and    w5, w0, #0x7F",
-            "orr    w5, w5, #0x80",
-            "strb   w5, [x1, #3]",
-            "lsr    w0, w0, #7",
-            "and    w5, w0, #0x7F",
-            "strb   w5, [x1, #4]",
-            "mov    w2, #5",
-
-            "200:",
+            "900:",
 
             in("w0") value,
             in("x1") ptr,
             lateout("w2") len,
             out("w4") _,
             out("w5") _,
-            out("x10") _,
-            out("w11") _,
             options(nostack),
         );
     }
@@ -131,7 +118,7 @@ pub fn encode_uleb128_u32(value: u32, buf: &mut [u8; ULEB128_U32_BUF_SIZE]) -> u
 }
 
 /// Encode a u32 as ULEB128 (fallback).
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 #[inline(always)]
 pub fn encode_uleb128_u32(mut value: u32, buf: &mut [u8; ULEB128_U32_BUF_SIZE]) -> usize {
     let mut i = 0;
@@ -150,7 +137,7 @@ pub fn encode_uleb128_u32(mut value: u32, buf: &mut [u8; ULEB128_U32_BUF_SIZE]) 
 /// Decode a u32 from ULEB128.
 ///
 /// Returns (value, bytes_consumed).
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn decode_uleb128_u32(buf: &[u8]) -> (u32, usize) {
     let result: u32;
@@ -218,7 +205,7 @@ pub fn decode_uleb128_u32(buf: &[u8]) -> (u32, usize) {
 }
 
 /// Decode a u32 from ULEB128 (fallback).
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 #[inline(always)]
 pub fn decode_uleb128_u32(buf: &[u8]) -> (u32, usize) {
     let mut result: u32 = 0;
@@ -238,7 +225,7 @@ pub fn decode_uleb128_u32(buf: &[u8]) -> (u32, usize) {
 /// Encode a u64 as ULEB128.
 ///
 /// Returns the number of bytes written.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn encode_uleb128_u64(value: u64, buf: &mut [u8; ULEB128_U64_BUF_SIZE]) -> usize {
     let len: usize;
@@ -246,30 +233,302 @@ pub fn encode_uleb128_u64(value: u64, buf: &mut [u8; ULEB128_U64_BUF_SIZE]) -> u
     // SAFETY: We write at most 10 bytes, buf is exactly 10 bytes.
     unsafe {
         core::arch::asm!(
-            // Optimized loop-based ULEB128 encode
-            "mov    w2, #0",            // byte index
+            // Comparison chain to determine length (no loop!)
+            // LEB128 thresholds: 2^7, 2^14, 2^21, 2^28, 2^35, 2^42, 2^49, 2^56, 2^63
+            "cmp    x0, #128",
+            "b.lo   100f",              // len=1
 
-            "100:",  // loop start
-            "and    w3, w0, #0x7F",     // byte = value & 0x7F
-            "lsr    x0, x0, #7",        // value >>= 7
+            "mov    x4, #0x4000",
+            "cmp    x0, x4",
+            "b.lo   200f",              // len=2
 
-            // Check if done (value == 0)
-            "cbz    x0, 200f",          // if value == 0, we're done
+            "mov    x4, #0x200000",
+            "cmp    x0, x4",
+            "b.lo   300f",              // len=3
 
-            // More bytes needed
-            "orr    w3, w3, #0x80",     // set continuation bit
-            "strb   w3, [x1, w2, uxtw]",
-            "add    w2, w2, #1",
-            "b      100b",
+            "mov    x4, #0x10000000",
+            "cmp    x0, x4",
+            "b.lo   400f",              // len=4
 
-            "200:",  // done
-            "strb   w3, [x1, w2, uxtw]",
-            "add    w2, w2, #1",        // length = index + 1
+            "mov    x4, #0x800000000",
+            "cmp    x0, x4",
+            "b.lo   500f",              // len=5
+
+            "mov    x4, #0x40000000000",
+            "cmp    x0, x4",
+            "b.lo   600f",              // len=6
+
+            "mov    x4, #0x2000000000000",
+            "cmp    x0, x4",
+            "b.lo   700f",              // len=7
+
+            "mov    x4, #0x100000000000000",
+            "cmp    x0, x4",
+            "b.lo   800f",              // len=8
+
+            "mov    x4, #0x8000000000000000",
+            "cmp    x0, x4",
+            "b.lo   900f",              // len=9
+
+            // len=10
+            "b      1000f",
+
+            // len=1: 0-127
+            "100:",
+            "and    w3, w0, #0x7F",
+            "strb   w3, [x1]",
+            "mov    w2, #1",
+            "b      9000f",
+
+            // len=2: 128-16383
+            "200:",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "strb   w3, [x1, #1]",
+            "mov    w2, #2",
+            "b      9000f",
+
+            // len=3
+            "300:",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "strb   w3, [x1, #2]",
+            "mov    w2, #3",
+            "b      9000f",
+
+            // len=4
+            "400:",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #2]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "strb   w3, [x1, #3]",
+            "mov    w2, #4",
+            "b      9000f",
+
+            // len=5
+            "500:",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #2]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #3]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "strb   w3, [x1, #4]",
+            "mov    w2, #5",
+            "b      9000f",
+
+            // len=6
+            "600:",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #2]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #3]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #4]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "strb   w3, [x1, #5]",
+            "mov    w2, #6",
+            "b      9000f",
+
+            // len=7
+            "700:",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #2]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #3]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #4]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #5]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "strb   w3, [x1, #6]",
+            "mov    w2, #7",
+            "b      9000f",
+
+            // len=8
+            "800:",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #2]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #3]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #4]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #5]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #6]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "strb   w3, [x1, #7]",
+            "mov    w2, #8",
+            "b      9000f",
+
+            // len=9
+            "900:",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #2]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #3]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #4]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #5]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #6]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #7]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "strb   w3, [x1, #8]",
+            "mov    w2, #9",
+            "b      9000f",
+
+            // len=10
+            "1000:",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #1]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #2]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #3]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #4]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #5]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #6]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #7]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x7F",
+            "orr    w3, w3, #0x80",
+            "strb   w3, [x1, #8]",
+            "lsr    x0, x0, #7",
+            "and    w3, w0, #0x01",     // Only 1 bit for byte 10
+            "strb   w3, [x1, #9]",
+            "mov    w2, #10",
+
+            "9000:",
 
             inout("x0") value => _,
             in("x1") ptr,
             lateout("w2") len,
             out("w3") _,
+            out("x4") _,
             options(nostack),
         );
     }
@@ -277,7 +536,7 @@ pub fn encode_uleb128_u64(value: u64, buf: &mut [u8; ULEB128_U64_BUF_SIZE]) -> u
 }
 
 /// Encode a u64 as ULEB128 (fallback).
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 #[inline(always)]
 pub fn encode_uleb128_u64(mut value: u64, buf: &mut [u8; ULEB128_U64_BUF_SIZE]) -> usize {
     let mut i = 0;
@@ -296,7 +555,7 @@ pub fn encode_uleb128_u64(mut value: u64, buf: &mut [u8; ULEB128_U64_BUF_SIZE]) 
 /// Decode a u64 from ULEB128.
 ///
 /// Returns (value, bytes_consumed).
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn decode_uleb128_u64(buf: &[u8]) -> (u64, usize) {
     let result: u64;
@@ -414,7 +673,7 @@ pub fn decode_uleb128_u64(buf: &[u8]) -> (u64, usize) {
 }
 
 /// Decode a u64 from ULEB128 (fallback).
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 #[inline(always)]
 pub fn decode_uleb128_u64(buf: &[u8]) -> (u64, usize) {
     let mut result: u64 = 0;
