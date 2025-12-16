@@ -659,6 +659,29 @@ pub const fn decode_vu64(n: Vu64) -> u64 {
 #[inline(always)]
 pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
     let first = *data.first()?;
+
+    // Fast path: 1-byte encoding (high bit set)
+    if first & 0x80 != 0 {
+        return Some(((first & 0x7F) as u64, 1));
+    }
+
+    // Fast path: 2-byte encoding (bit 6 set)
+    if first & 0x40 != 0 {
+        let second = *data.get(1)?;
+        let val = (((first & 0x3F) as u64) << 8) | (second as u64);
+        return Some((val + 128, 2));
+    }
+
+    // Fast path: 3-byte encoding (bit 5 set)
+    if first & 0x20 != 0 {
+        if data.len() < 3 {
+            return None;
+        }
+        let low = u16::from_le_bytes([data[1], data[2]]) as u64;
+        let val = (((first & 0x1F) as u64) << 16) | low;
+        return Some((val + 16512, 3));
+    }
+
     let len = decode_len_vu64(first) as usize;
     if data.len() < len {
         return None;
@@ -814,6 +837,29 @@ pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
 #[inline(always)]
 pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
     let first = *data.first()?;
+
+    // Fast path: 1-byte encoding (high bit set)
+    if first & 0x80 != 0 {
+        return Some(((first & 0x7F) as u64, 1));
+    }
+
+    // Fast path: 2-byte encoding (bit 6 set)
+    if first & 0x40 != 0 {
+        let second = *data.get(1)?;
+        let val = (((first & 0x3F) as u64) << 8) | (second as u64);
+        return Some((val + 128, 2));
+    }
+
+    // Fast path: 3-byte encoding (bit 5 set)
+    if first & 0x20 != 0 {
+        if data.len() < 3 {
+            return None;
+        }
+        let low = u16::from_le_bytes([data[1], data[2]]) as u64;
+        let val = (((first & 0x1F) as u64) << 16) | low;
+        return Some((val + 16512, 3));
+    }
+
     let len = decode_len_vu64(first) as usize;
     if data.len() < len {
         return None;
@@ -821,9 +867,7 @@ pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
 
     // Pack into (prefix, data_u64) with LE byte order
     let mut buf = [0u8; 8];
-    if len > 1 {
-        buf[..(len - 1)].copy_from_slice(&data[1..len]);
-    }
+    buf[..(len - 1)].copy_from_slice(&data[1..len]);
     let packed = u64::from_le_bytes(buf);
     Some((decode_vu64(Vu64(first, packed)), len))
 }

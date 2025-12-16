@@ -457,43 +457,66 @@ pub const fn decode_vu32(n: Vu32) -> u32 {
 #[inline(always)]
 pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
     let first = *data.first()?;
+
+    // Fast path: 1-byte encoding (high bit set)
+    if first & 0x80 != 0 {
+        return Some(((first & 0x7F) as u32, 1));
+    }
+
+    // Fast path: 2-byte encoding (bit 6 set)
+    if first & 0x40 != 0 {
+        let second = *data.get(1)?;
+        let val = (((first & 0x3F) as u32) << 8) | (second as u32);
+        return Some((val + 128, 2));
+    }
+
+    // Fast path: 3-byte encoding (bit 5 set)
+    if first & 0x20 != 0 {
+        if data.len() < 3 {
+            return None;
+        }
+        let low = u16::from_le_bytes([data[1], data[2]]) as u32;
+        let val = (((first & 0x1F) as u32) << 16) | low;
+        return Some((val + 16512, 3));
+    }
+
     let len = decode_len_vu32(first) as usize;
     if data.len() < len {
         return None;
     }
 
     let ptr = data.as_ptr();
-    let result: u32;
+    let result: u64;
     unsafe {
         core::arch::asm!(
             // Jump table for load + decode (16-byte entries)
             "adr    x10, 100f",
-            "sub    w11, w5, #1",
-            "add    x10, x10, w11, uxtw #4",
+            "sub    x11, x5, #1",
+            "add    x10, x10, x11, lsl #4",
             "br     x10",
 
             // len=1: all data in prefix, no load needed
             "100:",
-            "and    w0, w3, #0x7F",
+            "and    x0, x3, #0x7F",
             "b      200f",
             "nop", "nop",
 
             // len=2: load 1 byte, offset=128
             "ldrb   w1, [x4, #1]",
             "and    w6, w3, #0x3F",
-            "orr    w0, w1, w6, lsl #8",
+            "orr    x0, x1, x6, lsl #8",
             "b      201f",
 
             // len=3: load 2 bytes (ldrh), offset=16512
             "ldrh   w1, [x4, #1]",
             "and    w6, w3, #0x1F",
-            "orr    w0, w1, w6, lsl #16",
+            "orr    x0, x1, x6, lsl #16",
             "b      202f",
 
             // len=4: load 3 bytes, offset=2113664
             "ldrh   w1, [x4, #1]",
             "ldrb   w6, [x4, #3]",
-            "orr    w1, w1, w6, lsl #16",
+            "orr    x1, x1, x6, lsl #16",
             "b      203f",
 
             // len=5: load 4 bytes, offset=270549120
@@ -507,42 +530,42 @@ pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
             "b      300f",
 
             "201:",  // len=2: add 128
-            "add    w0, w0, #128",
+            "add    x0, x0, #128",
             "b      300f",
 
             "202:",  // len=3: add 16512
-            "mov    w9, #0x4080",
-            "add    w0, w0, w9",
+            "mov    x9, #0x4080",
+            "add    x0, x0, x9",
             "b      300f",
 
             "203:",  // len=4: finish load + add 2113664
             "and    w6, w3, #0x0F",
-            "orr    w0, w1, w6, lsl #24",
-            "mov    w9, #0x4080",
-            "movk   w9, #0x20, lsl #16",
-            "add    w0, w0, w9",
+            "orr    x0, x1, x6, lsl #24",
+            "mov    x9, #0x4080",
+            "movk   x9, #0x20, lsl #16",
+            "add    x0, x0, x9",
             "b      300f",
 
             "204:",  // len=5: add 270549120
-            "mov    w9, #0x4080",
-            "movk   w9, #0x1020, lsl #16",
-            "add    w0, w0, w9",
+            "mov    x9, #0x4080",
+            "movk   x9, #0x1020, lsl #16",
+            "add    x0, x0, x9",
 
             "300:",
 
-            in("w3") first as u32,
+            in("x3") first as u64,
             in("x4") ptr,
-            in("w5") len as u32,
-            out("w0") result,
-            out("w1") _,
-            out("w6") _,
-            out("w9") _,
+            in("x5") len as u64,
+            out("x0") result,
+            out("x1") _,
+            out("x6") _,
+            out("x9") _,
             out("x10") _,
-            out("w11") _,
+            out("x11") _,
             options(readonly, nostack),
         );
     }
-    Some((result, len))
+    Some((result as u32, len))
 }
 
 /// Decode a u32 from a byte slice.
@@ -552,15 +575,36 @@ pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
 #[inline(always)]
 pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
     let first = *data.first()?;
+
+    // Fast path: 1-byte encoding (high bit set)
+    if first & 0x80 != 0 {
+        return Some(((first & 0x7F) as u32, 1));
+    }
+
+    // Fast path: 2-byte encoding (bit 6 set)
+    if first & 0x40 != 0 {
+        let second = *data.get(1)?;
+        let val = (((first & 0x3F) as u32) << 8) | (second as u32);
+        return Some((val + 128, 2));
+    }
+
+    // Fast path: 3-byte encoding (bit 5 set)
+    if first & 0x20 != 0 {
+        if data.len() < 3 {
+            return None;
+        }
+        let low = u16::from_le_bytes([data[1], data[2]]) as u32;
+        let val = (((first & 0x1F) as u32) << 16) | low;
+        return Some((val + 16512, 3));
+    }
+
     let len = decode_len_vu32(first) as usize;
     if data.len() < len {
         return None;
     }
 
     let mut buf = [0u8; 4];
-    if len > 1 {
-        buf[..(len - 1)].copy_from_slice(&data[1..len]);
-    }
+    buf[..(len - 1)].copy_from_slice(&data[1..len]);
     let packed = u32::from_le_bytes(buf);
     Some((decode_vu32(Vu32(first, packed)), len))
 }

@@ -1671,6 +1671,28 @@ pub const fn decode_vu128(n: Vu128) -> u128 {
 pub fn decode_vu128_slice(data: &[u8]) -> Option<(u128, usize)> {
     let p1 = *data.first()?;
 
+    // Fast path: 1-byte encoding (high bit set)
+    if p1 & 0x80 != 0 {
+        return Some(((p1 & 0x7F) as u128, 1));
+    }
+
+    // Fast path: 2-byte encoding (bit 6 set)
+    if p1 & 0x40 != 0 {
+        let second = *data.get(1)?;
+        let val = (((p1 & 0x3F) as u128) << 8) | (second as u128);
+        return Some((val + 128, 2));
+    }
+
+    // Fast path: 3-byte encoding (bit 5 set)
+    if p1 & 0x20 != 0 {
+        if data.len() < 3 {
+            return None;
+        }
+        let low = u16::from_le_bytes([data[1], data[2]]) as u128;
+        let val = (((p1 & 0x1F) as u128) << 16) | low;
+        return Some((val + 16512, 3));
+    }
+
     if p1 == 0 {
         // Extended format (len 9+) - need second byte for length
         let p2 = *data.get(1)?;
