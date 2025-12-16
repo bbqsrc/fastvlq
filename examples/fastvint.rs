@@ -9,8 +9,7 @@ fn main() {
         }
     };
 
-    let v_be = fastvlq::encode_vu64_be(n);
-    let v_le = fastvlq::encode_vu64_le(n);
-    println!("BE: {:?}", v_be);
-    println!("LE: {:?}", v_le);
+    let v = fastvint::encode_vu64(n);
+    println!("Encoded: {:?}", v);
+    println!("Decoded: {}", fastvint::decode_vu64(v));
 }

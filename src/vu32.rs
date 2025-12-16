@@ -1,9 +1,6 @@
 //! Unsigned 32-bit VLQ encoding.
 
 use core::fmt::{Debug, Display};
-use core::marker::PhantomData;
-
-use crate::{BE, LE};
 
 pub(crate) const VU32_BUF_SIZE: usize = 5;
 
@@ -14,181 +11,630 @@ pub(crate) const fn decode_len_vu32(n: u8) -> u8 {
     if len > 5 { 5 } else { len }
 }
 
-/// Encode a u32 in big-endian VLQ format.
+/// Encode a u32 in VLQ format using aarch64 inline asm.
+#[cfg(target_arch = "aarch64")]
 #[inline(always)]
-#[must_use]
-pub const fn encode_vu32_be(n: u32) -> Vu32<BE> {
-    let n64 = n as u64;
+fn encode_vu32_asm(n: u32) -> (u8, u32) {
+    let prefix: u32;
+    let data: u32;
+    // SAFETY: Pure computation, no memory access.
+    unsafe {
+        core::arch::asm!(
+            // Compare against thresholds and branch
+            "cmp    w0, #128",
+            "b.lo   100f",
 
-    // Pack prefix + value into u64, left-aligned
-    let packed: u64 = if n64 < offset!(2) as u64 {
-        (0x80 | n64) << 56
-    } else if n64 < offset!(3) as u64 {
-        (0x4000 | (n64 - offset!(2) as u64)) << 48
-    } else if n64 < offset!(4) as u64 {
-        (0x20_0000 | (n64 - offset!(3) as u64)) << 40
-    } else if n64 < offset!(5) {
-        (0x1000_0000 | (n64 - offset!(4) as u64)) << 32
-    } else {
-        (0x08_0000_0000 | (n64 - offset!(5))) << 24
-    };
+            "mov    w4, #0x4080",
+            "cmp    w0, w4",
+            "b.lo   101f",
 
-    let b = packed.to_be_bytes();
-    Vu32([b[0], b[1], b[2], b[3], b[4]], PhantomData)
+            "mov    w4, #0x4080",
+            "movk   w4, #0x20, lsl #16",
+            "cmp    w0, w4",
+            "b.lo   102f",
+
+            "mov    w4, #0x4080",
+            "movk   w4, #0x1020, lsl #16",
+            "cmp    w0, w4",
+            "b.lo   103f",
+
+            // len=5: offset = 270549120 = 0x10204080
+            // For u32, high bits are always 0, so prefix is just 0x08
+            "mov    w4, #0x4080",
+            "movk   w4, #0x1020, lsl #16",
+            "sub    w1, w0, w4",           // val = n - offset (this is data)
+            "mov    w2, #0x08",            // prefix = 0x08
+            "b      200f",
+
+            // len=1: n < 128, offset = 0
+            "100:",
+            "orr    w2, w0, #0x80",        // prefix = 0x80 | n
+            "mov    w1, #0",               // data = 0
+            "b      200f",
+
+            // len=2: offset = 128
+            "101:",
+            "sub    w1, w0, #128",         // val = n - 128
+            "lsr    w2, w1, #8",           // high bits
+            "orr    w2, w2, #0x40",        // prefix = 0x40 | high
+            "and    w1, w1, #0xFF",        // data = low byte
+            "b      200f",
+
+            // len=3: offset = 16512 = 0x4080
+            "102:",
+            "mov    w4, #0x4080",
+            "sub    w1, w0, w4",           // val = n - offset
+            "lsr    w2, w1, #16",          // high bits
+            "orr    w2, w2, #0x20",        // prefix = 0x20 | high
+            "and    w1, w1, #0xFFFF",      // data = low 2 bytes
+            "b      200f",
+
+            // len=4: offset = 2113664 = 0x204080
+            "103:",
+            "mov    w4, #0x4080",
+            "movk   w4, #0x20, lsl #16",
+            "sub    w1, w0, w4",           // val = n - offset
+            "lsr    w2, w1, #24",          // high bits
+            "orr    w2, w2, #0x10",        // prefix = 0x10 | high
+            "ubfx   w1, w1, #0, #24",      // data = low 3 bytes
+
+            "200:",
+
+            inout("w0") n => _,
+            out("w1") data,
+            out("w2") prefix,
+            out("w4") _,
+            options(pure, nomem, nostack),
+        );
+    }
+    (prefix as u8, data)
 }
 
-/// Encode a u32 in little-endian VLQ format.
+/// Encode a u32 in VLQ format.
+///
+/// Returns Vu32(prefix, packed) where packed contains data bytes in LE order.
+#[cfg(target_arch = "aarch64")]
 #[inline(always)]
-#[must_use]
-pub const fn encode_vu32_le(n: u32) -> Vu32<LE> {
+pub fn encode_vu32(n: u32) -> Vu32 {
+    let (prefix, data) = encode_vu32_asm(n);
+    Vu32(prefix, data)
+}
+
+/// Encode a u32 in VLQ format using x86_64 inline asm.
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[inline(always)]
+fn encode_vu32_asm_x86(n: u32) -> (u8, u32) {
+    let prefix: u32;
+    let data: u32;
+    // SAFETY: Pure computation, no memory access.
+    unsafe {
+        core::arch::asm!(
+            // Compare against thresholds and branch
+            "cmp    {n:e}, 128",
+            "jb     100f",
+
+            "cmp    {n:e}, 0x4080",
+            "jb     101f",
+
+            "cmp    {n:e}, 0x204080",
+            "jb     102f",
+
+            "cmp    {n:e}, 0x10204080",
+            "jb     103f",
+
+            // len=5: offset = 270549120 = 0x10204080
+            // For u32, high bits are always 0, so prefix is just 0x08
+            "mov    {data:e}, {n:e}",
+            "sub    {data:e}, 0x10204080",
+            "mov    {prefix:e}, 0x08",
+            "jmp    200f",
+
+            // len=1: n < 128, offset = 0
+            "100:",
+            "mov    {prefix:e}, {n:e}",
+            "or     {prefix:e}, 0x80",
+            "xor    {data:e}, {data:e}",
+            "jmp    200f",
+
+            // len=2: offset = 128
+            "101:",
+            "mov    {data:e}, {n:e}",
+            "sub    {data:e}, 128",
+            "mov    {prefix:e}, {data:e}",
+            "shr    {prefix:e}, 8",
+            "or     {prefix:e}, 0x40",
+            "and    {data:e}, 0xFF",
+            "jmp    200f",
+
+            // len=3: offset = 16512 = 0x4080
+            "102:",
+            "mov    {data:e}, {n:e}",
+            "sub    {data:e}, 0x4080",
+            "mov    {prefix:e}, {data:e}",
+            "shr    {prefix:e}, 16",
+            "or     {prefix:e}, 0x20",
+            "and    {data:e}, 0xFFFF",
+            "jmp    200f",
+
+            // len=4: offset = 2113664 = 0x204080
+            "103:",
+            "mov    {data:e}, {n:e}",
+            "sub    {data:e}, 0x204080",
+            "mov    {prefix:e}, {data:e}",
+            "shr    {prefix:e}, 24",
+            "or     {prefix:e}, 0x10",
+            "and    {data:e}, 0xFFFFFF",
+
+            "200:",
+
+            n = in(reg) n,
+            prefix = out(reg) prefix,
+            data = out(reg) data,
+            options(pure, nomem, nostack),
+        );
+    }
+    (prefix as u8, data)
+}
+
+/// Encode a u32 in VLQ format.
+///
+/// Returns Vu32(prefix, packed) where packed contains data bytes in LE order.
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[inline(always)]
+pub fn encode_vu32(n: u32) -> Vu32 {
+    let (prefix, data) = encode_vu32_asm_x86(n);
+    Vu32(prefix, data)
+}
+
+/// Encode a u32 in VLQ format.
+///
+/// Returns Vu32(prefix, packed) where packed contains data bytes in LE order.
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "lzcnt")
+)))]
+#[inline(always)]
+pub const fn encode_vu32(n: u32) -> Vu32 {
     let n64 = n as u64;
 
-    let out = if n64 < offset!(2) as u64 {
-        [0x80 | (n as u8), 0, 0, 0, 0]
+    if n64 < offset!(2) as u64 {
+        // len=1: all data in prefix
+        Vu32(0x80 | (n as u8), 0)
     } else if n64 < offset!(3) as u64 {
+        // len=2: 1 data byte
         let val = n64 - offset!(2) as u64;
-        let b = val.to_le_bytes();
-        [0x40 | ((val >> 8) as u8), b[0], 0, 0, 0]
+        Vu32(0x40 | ((val >> 8) as u8), (val & 0xFF) as u32)
     } else if n64 < offset!(4) as u64 {
+        // len=3: 2 data bytes
         let val = n64 - offset!(3) as u64;
-        let b = val.to_le_bytes();
-        [0x20 | ((val >> 16) as u8), b[0], b[1], 0, 0]
+        Vu32(0x20 | ((val >> 16) as u8), (val & 0xFFFF) as u32)
     } else if n64 < offset!(5) {
+        // len=4: 3 data bytes
         let val = n64 - offset!(4) as u64;
-        let b = val.to_le_bytes();
-        [0x10 | ((val >> 24) as u8), b[0], b[1], b[2], 0]
+        Vu32(0x10 | ((val >> 24) as u8), (val & 0xFF_FFFF) as u32)
     } else {
+        // len=5: 4 data bytes
         let val = n64 - offset!(5);
-        let b = val.to_le_bytes();
-        [0x08 | ((val >> 32) as u8), b[0], b[1], b[2], b[3]]
-    };
-
-    Vu32(out, PhantomData)
-}
-
-/// Decode a big-endian VLQ back to u32.
-#[inline(always)]
-pub const fn decode_vu32_be(n: Vu32<BE>) -> u32 {
-    let len = n.len();
-    let b = n.bytes();
-    let raw = u64::from_be_bytes([0, 0, 0, b[0], b[1], b[2], b[3], b[4]]);
-
-    match len {
-        1 => ((raw >> 32) & 0x7F) as u32,
-        2 => (((raw >> 24) & 0x3FFF) as u32) + offset!(2) as u32,
-        3 => (((raw >> 16) & 0x1F_FFFF) as u32) + offset!(3) as u32,
-        4 => (((raw >> 8) & 0x0FFF_FFFF) as u32) + offset!(4) as u32,
-        _ => ((raw & 0x07_FFFF_FFFF) + offset!(5)) as u32,
+        Vu32(0x08 | ((val >> 32) as u8), (val & 0xFFFF_FFFF) as u32)
     }
 }
 
-/// Decode a little-endian VLQ back to u32.
-#[inline(always)]
-pub const fn decode_vu32_le(n: Vu32<LE>) -> u32 {
-    let len = n.len();
-    let b = n.bytes();
-    let data = u64::from_le_bytes([b[1], b[2], b[3], b[4], 0, 0, 0, 0]);
+// Lookup tables for decode (fallback when no asm available)
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "lzcnt")
+)))]
+const OFFSETS: [u64; 6] = [
+    0,
+    0,
+    offset!(2) as u64,
+    offset!(3) as u64,
+    offset!(4) as u64,
+    offset!(5),
+];
 
-    match len {
-        1 => (b[0] & 0x7F) as u32,
-        2 => ((((b[0] & 0x3F) as u32) << 8) | (data & 0xFF) as u32) + offset!(2) as u32,
-        3 => ((((b[0] & 0x1F) as u32) << 16) | (data & 0xFFFF) as u32) + offset!(3) as u32,
-        4 => ((((b[0] & 0x0F) as u32) << 24) | (data & 0xFF_FFFF) as u32) + offset!(4) as u32,
-        _ => ((((b[0] & 0x07) as u64) << 32) | (data & 0xFFFF_FFFF) + offset!(5)) as u32,
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "lzcnt")
+)))]
+const MASKS: [u8; 6] = [
+    0, 0x7F, // len=1: 7 bits
+    0x3F, // len=2: 6 bits
+    0x1F, // len=3: 5 bits
+    0x0F, // len=4: 4 bits
+    0x07, // len=5: 3 bits
+];
+
+/// Decode a little-endian VLQ using branchless aarch64 inline asm.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn decode_vu32_asm(prefix: u8, data: u32) -> u32 {
+    let result: u32;
+    // SAFETY: Pure computation, no memory access.
+    unsafe {
+        core::arch::asm!(
+            // Get length: clz gives 24-31 for u8 in w reg, so len = clz - 23
+            "clz    w4, w3",
+            "sub    w4, w4, #23",      // len = 1-5
+
+            // Clamp len to 5 max (for invalid inputs)
+            "cmp    w4, #5",
+            "csel   w4, w4, w12, le",  // w12 = 5
+
+            // Compute mask = 0xFF >> len
+            "mov    w7, #0xFF",
+            "lsr    w7, w7, w4",
+
+            // Compute data_bits = (len - 1) * 8
+            "sub    w8, w4, #1",
+            "lsl    w8, w8, #3",
+
+            // Jump table for offset (16-byte entries)
+            "adr    x10, 100f",
+            "sub    w11, w4, #1",
+            "add    x10, x10, w11, uxtw #4",
+            "br     x10",
+
+            // Jump table entries (4 instructions = 16 bytes each)
+            "100:",  // len=1: offset = 0
+            "mov    w9, #0",
+            "b      200f",
+            "nop", "nop",
+
+            // len=2: offset = 128
+            "mov    w9, #128",
+            "b      200f",
+            "nop", "nop",
+
+            // len=3: offset = 16512 = 0x4080
+            "mov    w9, #0x4080",
+            "b      200f",
+            "nop", "nop",
+
+            // len=4: offset = 2113664 = 0x204080
+            "mov    w9, #0x4080",
+            "movk   w9, #0x20, lsl #16",
+            "b      200f",
+            "nop",
+
+            // len=5: offset = 270549120 = 0x10204080
+            "mov    w9, #0x4080",
+            "movk   w9, #0x1020, lsl #16",
+            "b      200f",
+            "nop",
+
+            "200:",
+            // result = ((prefix & mask) << data_bits) | data + offset
+            "and    w5, w3, w7",
+            "lsl    w5, w5, w8",
+            "orr    w5, w5, w1",
+            "add    w0, w5, w9",
+
+            in("w3") prefix as u32,
+            in("w1") data,
+            in("w12") 5u32,
+            out("w0") result,
+            out("w4") _,
+            out("w5") _,
+            out("w7") _,
+            out("w8") _,
+            out("w9") _,
+            out("x10") _,
+            out("w11") _,
+            options(pure, nomem, nostack),
+        );
     }
+    result
+}
+
+/// Decode a VLQ back to u32.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn decode_vu32(n: Vu32) -> u32 {
+    decode_vu32_asm(n.0, n.1)
+}
+
+/// Decode a little-endian VLQ using x86_64 inline asm with LZCNT.
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[inline(always)]
+fn decode_vu32_asm_x86(prefix: u8, data: u32) -> u32 {
+    let result: u32;
+    // SAFETY: Pure computation, no memory access.
+    unsafe {
+        core::arch::asm!(
+            // Get length: lzcnt on byte gives leading zeros, len = lzcnt - 23
+            // But we have prefix in low byte of 32-bit reg, so lzcnt gives 24 + leading zeros of byte
+            "movzx  {prefix:e}, {prefix:l}",    // zero-extend byte to 32-bit
+            "lzcnt  {len:e}, {prefix:e}",       // lzcnt on 32-bit value
+            "sub    {len:e}, 23",               // len = lzcnt - 23
+
+            // Clamp len to 5 max
+            "cmp    {len:e}, 5",
+            "mov    {tmp:e}, 5",
+            "cmova  {len:e}, {tmp:e}",
+
+            // Compute mask = 0xFF >> len
+            "mov    {mask:e}, 0xFF",
+            "mov    ecx, {len:e}",
+            "shr    {mask:e}, cl",
+
+            // Compute data_bits = (len - 1) * 8
+            "mov    {shift:e}, {len:e}",
+            "sub    {shift:e}, 1",
+            "shl    {shift:e}, 3",
+
+            // Jump table: use lea + computed jump
+            "lea    {jump:r}, [rip + 100f]",
+            "mov    {idx:e}, {len:e}",
+            "sub    {idx:e}, 1",
+            "imul   {idx:e}, {idx:e}, 16",      // each entry is 16 bytes
+            "add    {jump:r}, {idx:r}",
+            "jmp    {jump:r}",
+
+            // Jump table entries (must be 16 bytes each)
+            // len=1: offset = 0
+            "100:",
+            "xor    {off:e}, {off:e}",
+            "jmp    200f",
+            ".byte 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90",  // 7 byte pad
+
+            // len=2: offset = 128
+            "mov    {off:e}, 128",
+            "jmp    200f",
+            ".byte 0x90, 0x90, 0x90, 0x90, 0x90, 0x90",  // 6 byte pad
+
+            // len=3: offset = 16512 = 0x4080
+            "mov    {off:e}, 0x4080",
+            "jmp    200f",
+            ".byte 0x90, 0x90, 0x90, 0x90, 0x90",  // 5 byte pad
+
+            // len=4: offset = 2113664 = 0x204080
+            "mov    {off:e}, 0x204080",
+            "jmp    200f",
+            ".byte 0x90, 0x90, 0x90, 0x90",  // 4 byte pad
+
+            // len=5: offset = 270549120 = 0x10204080
+            "mov    {off:e}, 0x10204080",
+            "jmp    200f",
+            ".byte 0x90, 0x90, 0x90",  // 3 byte pad
+
+            "200:",
+            // result = ((prefix & mask) << data_bits) | data + offset
+            "and    {prefix:e}, {mask:e}",
+            "mov    ecx, {shift:e}",
+            "shl    {prefix:e}, cl",
+            "or     {prefix:e}, {data:e}",
+            "add    {prefix:e}, {off:e}",
+
+            prefix = inout(reg) prefix as u32 => result,
+            data = in(reg) data,
+            len = out(reg) _,
+            tmp = out(reg) _,
+            mask = out(reg) _,
+            shift = out(reg) _,
+            jump = out(reg) _,
+            idx = out(reg) _,
+            off = out(reg) _,
+            out("ecx") _,
+            options(pure, nomem, nostack),
+        );
+    }
+    result
+}
+
+/// Decode a VLQ back to u32.
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt"))]
+#[inline(always)]
+pub fn decode_vu32(n: Vu32) -> u32 {
+    decode_vu32_asm_x86(n.0, n.1)
+}
+
+/// Decode a VLQ back to u32.
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "lzcnt")
+)))]
+#[inline(always)]
+pub const fn decode_vu32(n: Vu32) -> u32 {
+    let len = n.0.leading_zeros() as usize + 1;
+    let len = if len > 5 { 5 } else { len };
+    let prefix = n.0;
+    let data = n.1 as u64;
+
+    if len == 1 {
+        (prefix & 0x7F) as u32
+    } else {
+        let prefix_bits = (prefix & MASKS[len]) as u64;
+        let data_bits = (len - 1) * 8;
+        (((prefix_bits << data_bits) | data) + OFFSETS[len]) as u32
+    }
+}
+
+/// Decode a u32 from a byte slice.
+///
+/// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
+    let first = *data.first()?;
+    let len = decode_len_vu32(first) as usize;
+    if data.len() < len {
+        return None;
+    }
+
+    let ptr = data.as_ptr();
+    let result: u32;
+    unsafe {
+        core::arch::asm!(
+            // Jump table for load + decode (16-byte entries)
+            "adr    x10, 100f",
+            "sub    w11, w5, #1",
+            "add    x10, x10, w11, uxtw #4",
+            "br     x10",
+
+            // len=1: all data in prefix, no load needed
+            "100:",
+            "and    w0, w3, #0x7F",
+            "b      200f",
+            "nop", "nop",
+
+            // len=2: load 1 byte, offset=128
+            "ldrb   w1, [x4, #1]",
+            "and    w6, w3, #0x3F",
+            "orr    w0, w1, w6, lsl #8",
+            "b      201f",
+
+            // len=3: load 2 bytes (ldrh), offset=16512
+            "ldrh   w1, [x4, #1]",
+            "and    w6, w3, #0x1F",
+            "orr    w0, w1, w6, lsl #16",
+            "b      202f",
+
+            // len=4: load 3 bytes, offset=2113664
+            "ldrh   w1, [x4, #1]",
+            "ldrb   w6, [x4, #3]",
+            "orr    w1, w1, w6, lsl #16",
+            "b      203f",
+
+            // len=5: load 4 bytes, offset=270549120
+            // Note: prefix bits are always 0 for valid u32 values
+            "ldr    w0, [x4, #1]",
+            "b      204f",
+            "nop", "nop",
+
+            // Finish paths with offset addition
+            "200:",  // len=1 done (offset=0)
+            "b      300f",
+
+            "201:",  // len=2: add 128
+            "add    w0, w0, #128",
+            "b      300f",
+
+            "202:",  // len=3: add 16512
+            "mov    w9, #0x4080",
+            "add    w0, w0, w9",
+            "b      300f",
+
+            "203:",  // len=4: finish load + add 2113664
+            "and    w6, w3, #0x0F",
+            "orr    w0, w1, w6, lsl #24",
+            "mov    w9, #0x4080",
+            "movk   w9, #0x20, lsl #16",
+            "add    w0, w0, w9",
+            "b      300f",
+
+            "204:",  // len=5: add 270549120
+            "mov    w9, #0x4080",
+            "movk   w9, #0x1020, lsl #16",
+            "add    w0, w0, w9",
+
+            "300:",
+
+            in("w3") first as u32,
+            in("x4") ptr,
+            in("w5") len as u32,
+            out("w0") result,
+            out("w1") _,
+            out("w6") _,
+            out("w9") _,
+            out("x10") _,
+            out("w11") _,
+            options(readonly, nostack),
+        );
+    }
+    Some((result, len))
+}
+
+/// Decode a u32 from a byte slice.
+///
+/// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
+    let first = *data.first()?;
+    let len = decode_len_vu32(first) as usize;
+    if data.len() < len {
+        return None;
+    }
+
+    let mut buf = [0u8; 4];
+    if len > 1 {
+        buf[..(len - 1)].copy_from_slice(&data[1..len]);
+    }
+    let packed = u32::from_le_bytes(buf);
+    Some((decode_vu32(Vu32(first, packed)), len))
 }
 
 /// An unsigned 32-bit integer in variable-length quantity encoding.
+///
+/// Stored as (prefix_byte, packed_data) to fit in two registers.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
-pub struct Vu32<E>(pub(crate) [u8; VU32_BUF_SIZE], pub(crate) PhantomData<E>);
+pub struct Vu32(pub(crate) u8, pub(crate) u32);
 
 #[allow(clippy::len_without_is_empty)]
-impl<E> Vu32<E> {
+impl Vu32 {
+    /// Construct a new VLQ instance from the given `u32`.
+    #[inline(always)]
+    pub fn new(value: u32) -> Vu32 {
+        encode_vu32(value)
+    }
+
+    /// Retrieve the stored number as `u32`.
+    #[inline(always)]
+    pub fn get(&self) -> u32 {
+        decode_vu32(*self)
+    }
+
     /// Length of the internal representation in bytes.
     #[inline(always)]
     pub const fn len(&self) -> u8 {
-        decode_len_vu32(self.0[0])
+        decode_len_vu32(self.0)
     }
 
     /// Get the raw byte representation of the VLQ instance.
     #[inline(always)]
-    pub const fn bytes(&self) -> [u8; 5] {
-        self.0
+    pub const fn bytes(&self) -> [u8; VU32_BUF_SIZE] {
+        let mut out = [0u8; VU32_BUF_SIZE];
+        out[0] = self.0;
+        let len = self.len() as usize;
+        if len > 1 {
+            let data = self.1.to_le_bytes();
+            let mut i = 0;
+            while i < len - 1 {
+                out[i + 1] = data[i];
+                i += 1;
+            }
+        }
+        out
     }
 }
 
-impl Vu32<BE> {
-    /// Construct a new big-endian VLQ instance from the given `u32`.
-    #[inline(always)]
-    #[must_use]
-    pub const fn new(value: u32) -> Vu32<BE> {
-        encode_vu32_be(value)
-    }
-
-    /// Retrieve the stored number as `u32`.
-    #[inline(always)]
-    pub const fn get(&self) -> u32 {
-        decode_vu32_be(*self)
-    }
-}
-
-impl Vu32<LE> {
-    /// Construct a new little-endian VLQ instance from the given `u32`.
-    #[inline(always)]
-    #[must_use]
-    pub const fn new(value: u32) -> Vu32<LE> {
-        encode_vu32_le(value)
-    }
-
-    /// Retrieve the stored number as `u32`.
-    #[inline(always)]
-    pub const fn get(&self) -> u32 {
-        decode_vu32_le(*self)
-    }
-}
-
-impl From<u32> for Vu32<BE> {
+impl From<u32> for Vu32 {
     fn from(n: u32) -> Self {
-        encode_vu32_be(n)
+        encode_vu32(n)
     }
 }
 
-impl From<u32> for Vu32<LE> {
-    fn from(n: u32) -> Self {
-        encode_vu32_le(n)
+impl From<Vu32> for u32 {
+    fn from(n: Vu32) -> Self {
+        decode_vu32(n)
     }
 }
 
-impl From<Vu32<BE>> for u32 {
-    fn from(n: Vu32<BE>) -> Self {
-        decode_vu32_be(n)
-    }
-}
-
-impl From<Vu32<LE>> for u32 {
-    fn from(n: Vu32<LE>) -> Self {
-        decode_vu32_le(n)
-    }
-}
-
-impl<E> Display for Vu32<E>
-where
-    Vu32<E>: Copy,
-    u32: From<Vu32<E>>,
-{
+impl Display for Vu32 {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         Display::fmt(&u32::from(*self), f)
     }
 }
 
-impl<E> Debug for Vu32<E> {
+impl Debug for Vu32 {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         let len = self.len() as usize - 1;
+        let bytes = self.bytes();
         write!(f, "Vu32(0b")?;
-        for x in self.0.iter().take(len) {
+        for x in bytes.iter().take(len) {
             f.write_fmt(core::format_args!("{:08b}_", x))?;
         }
-        f.write_fmt(core::format_args!("{:08b})", self.0[len]))
+        f.write_fmt(core::format_args!("{:08b})", bytes[len]))
     }
 }
