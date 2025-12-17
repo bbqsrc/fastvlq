@@ -1664,6 +1664,69 @@ pub const fn decode_vu128(n: Vu128) -> u128 {
     }
 }
 
+// Lookup tables for branchless decode (len 1-8, single prefix byte)
+const PREFIX_MASKS_128: [u8; 9] = [0, 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00];
+const OFFSETS_128: [u128; 9] = [
+    0,
+    0,               // len=1
+    128,             // len=2
+    16512,           // len=3
+    2113664,         // len=4
+    270549120,       // len=5
+    34630287488,     // len=6
+    4432676798592,   // len=7
+    567382630219904, // len=8
+];
+
+// Extended format tables (len 9-18, two prefix bytes)
+const PREFIX_MASKS_128_EXT: [u8; 19] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, // unused 0-8
+    0xFF, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00, 0x00, 0x00, // len 9-18
+];
+const PREFIX_SHIFTS_128_EXT: [u8; 19] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, // unused 0-8
+    56, 64, 72, 80, 88, 96, 104, 0, 0, 0, // len 9-18
+];
+const OFFSETS_128_EXT: [u128; 19] = [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,                                                                                 // unused 0-8
+    72624976668147840,                                 // len=9: offset!(9)
+    72624976668147840 + (1u128 << 64),                 // len=10: offset!(10)
+    72624976668147840 + (1u128 << 64) + (1u128 << 70), // len=11
+    72624976668147840 + (1u128 << 64) + (1u128 << 70) + (1u128 << 77), // len=12
+    72624976668147840 + (1u128 << 64) + (1u128 << 70) + (1u128 << 77) + (1u128 << 84), // len=13
+    72624976668147840
+        + (1u128 << 64)
+        + (1u128 << 70)
+        + (1u128 << 77)
+        + (1u128 << 84)
+        + (1u128 << 91), // len=14
+    72624976668147840
+        + (1u128 << 64)
+        + (1u128 << 70)
+        + (1u128 << 77)
+        + (1u128 << 84)
+        + (1u128 << 91)
+        + (1u128 << 98), // len=15
+    72624976668147840
+        + (1u128 << 64)
+        + (1u128 << 70)
+        + (1u128 << 77)
+        + (1u128 << 84)
+        + (1u128 << 91)
+        + (1u128 << 98)
+        + (1u128 << 105), // len=16
+    0,                                                 // len=17-18: raw data
+    0,
+];
+
 /// Decode a u128 from a byte slice.
 ///
 /// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
@@ -1671,53 +1734,93 @@ pub const fn decode_vu128(n: Vu128) -> u128 {
 pub fn decode_vu128_slice(data: &[u8]) -> Option<(u128, usize)> {
     let p1 = *data.first()?;
 
-    // Fast path: 1-byte encoding (high bit set)
-    if p1 & 0x80 != 0 {
-        return Some(((p1 & 0x7F) as u128, 1));
-    }
-
-    // Fast path: 2-byte encoding (bit 6 set)
-    if p1 & 0x40 != 0 {
-        let second = *data.get(1)?;
-        let val = (((p1 & 0x3F) as u128) << 8) | (second as u128);
-        return Some((val + 128, 2));
-    }
-
-    // Fast path: 3-byte encoding (bit 5 set)
-    if p1 & 0x20 != 0 {
-        if data.len() < 3 {
+    if p1 != 0 {
+        // Standard format (len 1-8) - single prefix byte
+        let len = (p1.leading_zeros() + 1) as usize;
+        if data.len() < len {
             return None;
         }
-        let low = u16::from_le_bytes([data[1], data[2]]) as u128;
-        let val = (((p1 & 0x1F) as u128) << 16) | low;
-        return Some((val + 16512, 3));
-    }
 
-    if p1 == 0 {
-        // Extended format (len 9+) - need second byte for length
+        let raw = match len {
+            1 => 0u128,
+            2 => u128::from_le_bytes([data[1], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            3 => u128::from_le_bytes([data[1], data[2], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            4 => u128::from_le_bytes([
+                data[1], data[2], data[3], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]),
+            5 => u128::from_le_bytes([
+                data[1], data[2], data[3], data[4], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]),
+            6 => u128::from_le_bytes([
+                data[1], data[2], data[3], data[4], data[5], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]),
+            7 => u128::from_le_bytes([
+                data[1], data[2], data[3], data[4], data[5], data[6], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]),
+            _ => u128::from_le_bytes([
+                data[1], data[2], data[3], data[4], data[5], data[6], data[7], 0, 0, 0, 0, 0, 0, 0,
+                0, 0,
+            ]),
+        };
+
+        let shift = (len - 1) << 3;
+        let prefix_bits = ((p1 & PREFIX_MASKS_128[len]) as u128) << shift;
+        Some(((prefix_bits | raw) + OFFSETS_128[len], len))
+    } else {
+        // Extended format (len 9+) - two prefix bytes
         let p2 = *data.get(1)?;
         let len = decode_len_vu128(p1, p2) as usize;
         if data.len() < len {
             return None;
         }
-        let mut data_buf = [0u8; 16];
-        if len > 2 {
-            data_buf[..(len - 2)].copy_from_slice(&data[2..len]);
-        }
-        let packed = u128::from_le_bytes(data_buf);
-        Some((decode_vu128(Vu128(p1, p2, packed)), len))
-    } else {
-        // Standard format (len 1-8) - data goes in self.2
-        let len = decode_len_vu128(p1, 0) as usize;
-        if data.len() < len {
-            return None;
-        }
-        let mut data_buf = [0u8; 16];
-        if len > 1 {
-            data_buf[..(len - 1)].copy_from_slice(&data[1..len]);
-        }
-        let packed = u128::from_le_bytes(data_buf);
-        Some((decode_vu128(Vu128(p1, 0, packed)), len))
+
+        // len 9-18: data bytes are data[2..len], so len-2 data bytes
+        let raw = match len {
+            9 => u128::from_le_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], 0, 0, 0, 0, 0, 0, 0,
+                0, 0,
+            ]),
+            10 => u128::from_le_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], 0, 0, 0, 0,
+                0, 0, 0, 0,
+            ]),
+            11 => u128::from_le_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+                0, 0, 0, 0, 0, 0, 0,
+            ]),
+            12 => u128::from_le_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+                data[11], 0, 0, 0, 0, 0, 0,
+            ]),
+            13 => u128::from_le_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+                data[11], data[12], 0, 0, 0, 0, 0,
+            ]),
+            14 => u128::from_le_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+                data[11], data[12], data[13], 0, 0, 0, 0,
+            ]),
+            15 => u128::from_le_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+                data[11], data[12], data[13], data[14], 0, 0, 0,
+            ]),
+            16 => u128::from_le_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+                data[11], data[12], data[13], data[14], data[15], 0, 0,
+            ]),
+            17 => u128::from_le_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+                data[11], data[12], data[13], data[14], data[15], data[16], 0,
+            ]),
+            _ => u128::from_le_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+                data[11], data[12], data[13], data[14], data[15], data[16], data[17],
+            ]),
+        };
+
+        let shift = PREFIX_SHIFTS_128_EXT[len] as u32;
+        let prefix_bits = ((p2 & PREFIX_MASKS_128_EXT[len]) as u128) << shift;
+        Some(((prefix_bits | raw) + OFFSETS_128_EXT[len], len))
     }
 }
 

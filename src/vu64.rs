@@ -652,224 +652,54 @@ pub const fn decode_vu64(n: Vu64) -> u64 {
     }
 }
 
-/// Decode a u64 from a byte slice.
-///
-/// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-#[inline(always)]
-pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
-    let first = *data.first()?;
-
-    // Fast path: 1-byte encoding (high bit set)
-    if first & 0x80 != 0 {
-        return Some(((first & 0x7F) as u64, 1));
-    }
-
-    // Fast path: 2-byte encoding (bit 6 set)
-    if first & 0x40 != 0 {
-        let second = *data.get(1)?;
-        let val = (((first & 0x3F) as u64) << 8) | (second as u64);
-        return Some((val + 128, 2));
-    }
-
-    // Fast path: 3-byte encoding (bit 5 set)
-    if first & 0x20 != 0 {
-        if data.len() < 3 {
-            return None;
-        }
-        let low = u16::from_le_bytes([data[1], data[2]]) as u64;
-        let val = (((first & 0x1F) as u64) << 16) | low;
-        return Some((val + 16512, 3));
-    }
-
-    let len = decode_len_vu64(first) as usize;
-    if data.len() < len {
-        return None;
-    }
-
-    // Fused load + decode: branch on length to do minimal loads
-    let ptr = data.as_ptr();
-    let result: u64;
-    unsafe {
-        core::arch::asm!(
-            // Jump table for load + decode (16-byte entries)
-            "adr    x10, 100f",
-            "sub    w11, w5, #1",
-            "add    x10, x10, w11, uxtw #4",
-            "br     x10",
-
-            // len=1: all data in prefix, no load needed
-            "100:",
-            "and    x0, x3, #0x7F",
-            "b      200f",
-            "nop", "nop",
-
-            // len=2: load 1 byte, offset=128
-            "ldrb   w1, [x4, #1]",
-            "and    w6, w3, #0x3F",
-            "orr    x0, x1, x6, lsl #8",
-            "b      201f",
-
-            // len=3: load 2 bytes (ldrh), offset=16512
-            "ldrh   w1, [x4, #1]",
-            "and    w6, w3, #0x1F",
-            "orr    x0, x1, x6, lsl #16",
-            "b      202f",
-
-            // len=4: load 3 bytes, offset=2113664
-            "ldrh   w1, [x4, #1]",
-            "ldrb   w6, [x4, #3]",
-            "orr    w1, w1, w6, lsl #16",
-            "b      203f",
-
-            // len=5: load 4 bytes, offset=270549120
-            "ldr    w1, [x4, #1]",
-            "and    w6, w3, #0x07",
-            "orr    x0, x1, x6, lsl #32",
-            "b      204f",
-
-            // len=6: load 5 bytes, offset=34630287488
-            "ldr    w1, [x4, #1]",
-            "ldrb   w6, [x4, #5]",
-            "orr    x1, x1, x6, lsl #32",
-            "b      205f",
-
-            // len=7: load 6 bytes, offset=4432676798592
-            "ldr    w1, [x4, #1]",
-            "ldrh   w6, [x4, #5]",
-            "orr    x1, x1, x6, lsl #32",
-            "b      206f",
-
-            // len=8: load 7 bytes, offset=567382630219904
-            "ldr    w1, [x4, #1]",
-            "ldrh   w6, [x4, #5]",
-            "ldrb   w7, [x4, #7]",
-            "b      207f",
-
-            // len=9: load 8 bytes, offset=72624976668147840
-            "ldr    x1, [x4, #1]",
-            "mov    x9, #0x4080",
-            "movk   x9, #0x1020, lsl #16",
-            "b      208f",
-
-            // Finish paths with offset addition
-            "200:",  // len=1 done (offset=0)
-            "b      300f",
-
-            "201:",  // len=2: add 128
-            "add    x0, x0, #128",
-            "b      300f",
-
-            "202:",  // len=3: add 16512
-            "mov    w9, #0x4080",
-            "add    x0, x0, x9",
-            "b      300f",
-
-            "203:",  // len=4: finish load + add 2113664
-            "and    w6, w3, #0x0F",
-            "orr    x0, x1, x6, lsl #24",
-            "mov    w9, #0x4080",
-            "movk   w9, #0x20, lsl #16",
-            "add    x0, x0, x9",
-            "b      300f",
-
-            "204:",  // len=5: add 270549120
-            "mov    w9, #0x4080",
-            "movk   w9, #0x1020, lsl #16",
-            "add    x0, x0, x9",
-            "b      300f",
-
-            "205:",  // len=6: finish + add 34630287488
-            "and    w6, w3, #0x03",
-            "orr    x0, x1, x6, lsl #40",
-            "mov    x9, #0x4080",
-            "movk   x9, #0x1020, lsl #16",
-            "movk   x9, #0x8, lsl #32",
-            "add    x0, x0, x9",
-            "b      300f",
-
-            "206:",  // len=7: finish + add 4432676798592
-            "and    w6, w3, #0x01",
-            "orr    x0, x1, x6, lsl #48",
-            "mov    x9, #0x4080",
-            "movk   x9, #0x1020, lsl #16",
-            "movk   x9, #0x408, lsl #32",
-            "add    x0, x0, x9",
-            "b      300f",
-
-            "207:",  // len=8: finish load + add offset
-            "orr    x1, x1, x6, lsl #32",
-            "orr    x0, x1, x7, lsl #48",
-            "mov    x9, #0x4080",
-            "movk   x9, #0x1020, lsl #16",
-            "movk   x9, #0x0408, lsl #32",
-            "movk   x9, #0x0002, lsl #48",
-            "add    x0, x0, x9",
-            "b      300f",
-
-            "208:",  // len=9: finish offset + add
-            "movk   x9, #0x0408, lsl #32",
-            "movk   x9, #0x0102, lsl #48",
-            "add    x0, x1, x9",
-
-            "300:",
-
-            in("w3") first as u32,
-            in("x4") ptr,
-            in("w5") len as u32,
-            out("x0") result,
-            out("x1") _,
-            out("w6") _,
-            out("w7") _,
-            out("x9") _,
-            out("x10") _,
-            out("w11") _,
-            options(readonly, nostack),
-        );
-    }
-    Some((result, len))
-}
+// Lookup tables for branchless decode
+const PREFIX_MASKS_64: [u8; 10] = [0, 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00, 0x00];
+const OFFSETS_64: [u64; 10] = [
+    0,
+    0,                 // len=1
+    128,               // len=2
+    16512,             // len=3
+    2113664,           // len=4
+    270549120,         // len=5
+    34630287488,       // len=6
+    4432676798592,     // len=7
+    567382630219904,   // len=8
+    72624976668147840, // len=9
+];
 
 /// Decode a u64 from a byte slice.
 ///
 /// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
-#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 #[inline(always)]
 pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
     let first = *data.first()?;
-
-    // Fast path: 1-byte encoding (high bit set)
-    if first & 0x80 != 0 {
-        return Some(((first & 0x7F) as u64, 1));
-    }
-
-    // Fast path: 2-byte encoding (bit 6 set)
-    if first & 0x40 != 0 {
-        let second = *data.get(1)?;
-        let val = (((first & 0x3F) as u64) << 8) | (second as u64);
-        return Some((val + 128, 2));
-    }
-
-    // Fast path: 3-byte encoding (bit 5 set)
-    if first & 0x20 != 0 {
-        if data.len() < 3 {
-            return None;
-        }
-        let low = u16::from_le_bytes([data[1], data[2]]) as u64;
-        let val = (((first & 0x1F) as u64) << 16) | low;
-        return Some((val + 16512, 3));
-    }
-
     let len = decode_len_vu64(first) as usize;
+
     if data.len() < len {
         return None;
     }
 
-    // Pack into (prefix, data_u64) with LE byte order
-    let mut buf = [0u8; 8];
-    buf[..(len - 1)].copy_from_slice(&data[1..len]);
-    let packed = u64::from_le_bytes(buf);
-    Some((decode_vu64(Vu64(first, packed)), len))
+    // Match on length to create fixed-size arrays for from_le_bytes
+    let raw = match len {
+        1 => 0u64,
+        2 => u64::from_le_bytes([data[1], 0, 0, 0, 0, 0, 0, 0]),
+        3 => u64::from_le_bytes([data[1], data[2], 0, 0, 0, 0, 0, 0]),
+        4 => u64::from_le_bytes([data[1], data[2], data[3], 0, 0, 0, 0, 0]),
+        5 => u64::from_le_bytes([data[1], data[2], data[3], data[4], 0, 0, 0, 0]),
+        6 => u64::from_le_bytes([data[1], data[2], data[3], data[4], data[5], 0, 0, 0]),
+        7 => u64::from_le_bytes([data[1], data[2], data[3], data[4], data[5], data[6], 0, 0]),
+        8 => u64::from_le_bytes([
+            data[1], data[2], data[3], data[4], data[5], data[6], data[7], 0,
+        ]),
+        _ => u64::from_le_bytes([
+            data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+        ]),
+    };
+
+    // Table lookups for prefix mask and offset
+    let shift = ((len - 1) << 3).min(56);
+    let prefix_bits = ((first & PREFIX_MASKS_64[len]) as u64) << shift;
+    Some(((prefix_bits | raw) + OFFSETS_64[len], len))
 }
 
 /// An unsigned 64-bit integer in variable-length quantity encoding.
