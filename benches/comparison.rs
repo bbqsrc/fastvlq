@@ -155,6 +155,15 @@ fn bench_u32(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_uleb128_u32(black_box(v)))
         });
+
+        // Control: fixed-size read from slice with bounds check
+        let control_buf = value.to_le_bytes();
+        let control_slice: &[u8] = &control_buf;
+        group.bench_with_input(
+            BenchmarkId::new("decode/control", name),
+            &control_slice,
+            |b, v| b.iter(|| u32::from_le_bytes(black_box(*v)[..4].try_into().unwrap())),
+        );
     }
     group.finish();
 }
@@ -189,6 +198,15 @@ fn bench_i32(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_ileb128_i32(black_box(v)))
         });
+
+        // Control: fixed-size read from slice with bounds check
+        let control_buf = value.to_le_bytes();
+        let control_slice: &[u8] = &control_buf;
+        group.bench_with_input(
+            BenchmarkId::new("decode/control", name),
+            &control_slice,
+            |b, v| b.iter(|| i32::from_le_bytes(black_box(*v)[..4].try_into().unwrap())),
+        );
     }
     group.finish();
 }
@@ -223,6 +241,15 @@ fn bench_u64(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_uleb128_u64(black_box(v)))
         });
+
+        // Control: fixed-size read from slice with bounds check
+        let control_buf = value.to_le_bytes();
+        let control_slice: &[u8] = &control_buf;
+        group.bench_with_input(
+            BenchmarkId::new("decode/control", name),
+            &control_slice,
+            |b, v| b.iter(|| u64::from_le_bytes(black_box(*v)[..8].try_into().unwrap())),
+        );
     }
     group.finish();
 }
@@ -257,6 +284,15 @@ fn bench_i64(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_ileb128_i64(black_box(v)))
         });
+
+        // Control: fixed-size read from slice with bounds check
+        let control_buf = value.to_le_bytes();
+        let control_slice: &[u8] = &control_buf;
+        group.bench_with_input(
+            BenchmarkId::new("decode/control", name),
+            &control_slice,
+            |b, v| b.iter(|| i64::from_le_bytes(black_box(*v)[..8].try_into().unwrap())),
+        );
     }
     group.finish();
 }
@@ -291,6 +327,15 @@ fn bench_u128(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_uleb128_u128(black_box(v)))
         });
+
+        // Control: fixed-size read from slice with bounds check
+        let control_buf = value.to_le_bytes();
+        let control_slice: &[u8] = &control_buf;
+        group.bench_with_input(
+            BenchmarkId::new("decode/control", name),
+            &control_slice,
+            |b, v| b.iter(|| u128::from_le_bytes(black_box(*v)[..16].try_into().unwrap())),
+        );
     }
     group.finish();
 }
@@ -325,6 +370,15 @@ fn bench_i128(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_ileb128_i128(black_box(v)))
         });
+
+        // Control: fixed-size read from slice with bounds check
+        let control_buf = value.to_le_bytes();
+        let control_slice: &[u8] = &control_buf;
+        group.bench_with_input(
+            BenchmarkId::new("decode/control", name),
+            &control_slice,
+            |b, v| b.iter(|| i128::from_le_bytes(black_box(*v)[..16].try_into().unwrap())),
+        );
     }
     group.finish();
 }

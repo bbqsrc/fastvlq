@@ -216,8 +216,104 @@ pub fn decode_uleb128_u32(buf: &[u8]) -> (u32, usize) {
     (result, consumed)
 }
 
+/// Decode a u32 from ULEB128 (x86_64 ASM).
+#[cfg(all(target_arch = "x86_64", feature = "asm"))]
+#[inline(always)]
+pub fn decode_uleb128_u32(buf: &[u8]) -> (u32, usize) {
+    let buf_len = buf.len();
+    if buf_len == 0 {
+        return (0, 0);
+    }
+
+    let result: u32;
+    let consumed: usize;
+    let ptr = buf.as_ptr();
+    // SAFETY: We check bounds before each byte read.
+    unsafe {
+        core::arch::asm!(
+            // Byte 0 (shift 0)
+            "cmp {len:e}, 1",
+            "jb 300f",
+            "movzx {tmp:e}, byte ptr [{ptr}]",
+            "mov {res:e}, {tmp:e}",
+            "and {res:e}, 0x7F",
+            "test {tmp:e}, 0x80",
+            "jz 200f",
+
+            // Byte 1 (shift 7)
+            "cmp {len:e}, 2",
+            "jb 300f",
+            "movzx {tmp:e}, byte ptr [{ptr} + 1]",
+            "mov {t2:e}, {tmp:e}",
+            "and {t2:e}, 0x7F",
+            "shl {t2:e}, 7",
+            "or {res:e}, {t2:e}",
+            "test {tmp:e}, 0x80",
+            "jz 210f",
+
+            // Byte 2 (shift 14)
+            "cmp {len:e}, 3",
+            "jb 300f",
+            "movzx {tmp:e}, byte ptr [{ptr} + 2]",
+            "mov {t2:e}, {tmp:e}",
+            "and {t2:e}, 0x7F",
+            "shl {t2:e}, 14",
+            "or {res:e}, {t2:e}",
+            "test {tmp:e}, 0x80",
+            "jz 220f",
+
+            // Byte 3 (shift 21)
+            "cmp {len:e}, 4",
+            "jb 300f",
+            "movzx {tmp:e}, byte ptr [{ptr} + 3]",
+            "mov {t2:e}, {tmp:e}",
+            "and {t2:e}, 0x7F",
+            "shl {t2:e}, 21",
+            "or {res:e}, {t2:e}",
+            "test {tmp:e}, 0x80",
+            "jz 230f",
+
+            // Byte 4 (shift 28) - final byte, only 4 bits valid
+            "cmp {len:e}, 5",
+            "jb 300f",
+            "movzx {tmp:e}, byte ptr [{ptr} + 4]",
+            "test {tmp:e}, 0x80",
+            "jnz 300f",                      // error if continuation set
+            "and {tmp:e}, 0x0F",
+            "shl {tmp:e}, 28",
+            "or {res:e}, {tmp:e}",
+            "mov {con:e}, 5",
+            "jmp 400f",
+
+            // Exit points
+            "200:", "mov {con:e}, 1", "jmp 400f",
+            "210:", "mov {con:e}, 2", "jmp 400f",
+            "220:", "mov {con:e}, 3", "jmp 400f",
+            "230:", "mov {con:e}, 4", "jmp 400f",
+
+            "300:",                          // error
+            "xor {res:e}, {res:e}",
+            "xor {con:e}, {con:e}",
+
+            "400:",                          // final exit
+
+            ptr = in(reg) ptr,
+            len = in(reg) buf_len,
+            res = out(reg) result,
+            con = out(reg) consumed,
+            tmp = out(reg) _,
+            t2 = out(reg) _,
+            options(readonly, nostack),
+        );
+    }
+    (result, consumed)
+}
+
 /// Decode a u32 from ULEB128 (fallback).
-#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
+#[cfg(not(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", feature = "asm")
+)))]
 #[inline(always)]
 pub fn decode_uleb128_u32(buf: &[u8]) -> (u32, usize) {
     let mut result: u32 = 0;
@@ -692,8 +788,164 @@ pub fn decode_uleb128_u64(buf: &[u8]) -> (u64, usize) {
     (result, consumed)
 }
 
+/// Decode a u64 from ULEB128 (x86_64 ASM).
+#[cfg(all(target_arch = "x86_64", feature = "asm"))]
+#[inline(always)]
+pub fn decode_uleb128_u64(buf: &[u8]) -> (u64, usize) {
+    let buf_len = buf.len();
+    if buf_len == 0 {
+        return (0, 0);
+    }
+
+    let result: u64;
+    let consumed: usize;
+    let ptr = buf.as_ptr();
+    // SAFETY: We check bounds before each byte read.
+    unsafe {
+        core::arch::asm!(
+            // Byte 0 (shift 0)
+            "cmp {len}, 1",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr}]",
+            "mov {res}, {tmp}",
+            "and {res}, 0x7F",
+            "test {tmp}, 0x80",
+            "jz 200f",
+
+            // Byte 1 (shift 7)
+            "cmp {len}, 2",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 1]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 7",
+            "or {res}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 201f",
+
+            // Byte 2 (shift 14)
+            "cmp {len}, 3",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 2]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 14",
+            "or {res}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 202f",
+
+            // Byte 3 (shift 21)
+            "cmp {len}, 4",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 3]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 21",
+            "or {res}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 203f",
+
+            // Byte 4 (shift 28)
+            "cmp {len}, 5",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 4]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 28",
+            "or {res}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 204f",
+
+            // Byte 5 (shift 35)
+            "cmp {len}, 6",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 5]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 35",
+            "or {res}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 205f",
+
+            // Byte 6 (shift 42)
+            "cmp {len}, 7",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 6]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 42",
+            "or {res}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 206f",
+
+            // Byte 7 (shift 49)
+            "cmp {len}, 8",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 7]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 49",
+            "or {res}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 207f",
+
+            // Byte 8 (shift 56)
+            "cmp {len}, 9",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 8]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 56",
+            "or {res}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 208f",
+
+            // Byte 9 (shift 63) - final byte, only 1 bit valid
+            "cmp {len}, 10",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 9]",
+            "test {tmp}, 0x80",
+            "jnz 300f",                      // error if continuation set
+            "and {tmp}, 0x01",
+            "shl {tmp}, 63",
+            "or {res}, {tmp}",
+            "mov {con}, 10",
+            "jmp 400f",
+
+            // Exit points
+            "200:", "mov {con}, 1", "jmp 400f",
+            "201:", "mov {con}, 2", "jmp 400f",
+            "202:", "mov {con}, 3", "jmp 400f",
+            "203:", "mov {con}, 4", "jmp 400f",
+            "204:", "mov {con}, 5", "jmp 400f",
+            "205:", "mov {con}, 6", "jmp 400f",
+            "206:", "mov {con}, 7", "jmp 400f",
+            "207:", "mov {con}, 8", "jmp 400f",
+            "208:", "mov {con}, 9", "jmp 400f",
+
+            "300:",                          // error
+            "xor {res}, {res}",
+            "xor {con}, {con}",
+
+            "400:",                          // final exit
+
+            ptr = in(reg) ptr,
+            len = in(reg) buf_len,
+            res = out(reg) result,
+            con = out(reg) consumed,
+            tmp = out(reg) _,
+            t2 = out(reg) _,
+            options(readonly, nostack),
+        );
+    }
+    (result, consumed)
+}
+
 /// Decode a u64 from ULEB128 (fallback).
-#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
+#[cfg(not(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", feature = "asm")
+)))]
 #[inline(always)]
 pub fn decode_uleb128_u64(buf: &[u8]) -> (u64, usize) {
     let mut result: u64 = 0;
@@ -949,8 +1201,281 @@ pub fn decode_uleb128_u128(buf: &[u8]) -> (u128, usize) {
     (((result_hi as u128) << 64) | (result_lo as u128), consumed)
 }
 
+/// Decode a u128 from ULEB128 (x86_64 ASM).
+#[cfg(all(target_arch = "x86_64", feature = "asm"))]
+#[inline(always)]
+pub fn decode_uleb128_u128(buf: &[u8]) -> (u128, usize) {
+    let buf_len = buf.len();
+    if buf_len == 0 {
+        return (0, 0);
+    }
+
+    let result_lo: u64;
+    let result_hi: u64;
+    let consumed: usize;
+    let ptr = buf.as_ptr();
+    // SAFETY: We check bounds before each byte read.
+    unsafe {
+        core::arch::asm!(
+            "xor {hi}, {hi}",                // result_hi = 0
+
+            // Byte 0 (shift 0) - to low
+            "cmp {len}, 1",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr}]",
+            "mov {lo}, {tmp}",
+            "and {lo}, 0x7F",
+            "test {tmp}, 0x80",
+            "jz 200f",
+
+            // Byte 1 (shift 7) - to low
+            "cmp {len}, 2",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 1]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 7",
+            "or {lo}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 201f",
+
+            // Byte 2 (shift 14) - to low
+            "cmp {len}, 3",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 2]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 14",
+            "or {lo}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 202f",
+
+            // Byte 3 (shift 21) - to low
+            "cmp {len}, 4",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 3]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 21",
+            "or {lo}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 203f",
+
+            // Byte 4 (shift 28) - to low
+            "cmp {len}, 5",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 4]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 28",
+            "or {lo}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 204f",
+
+            // Byte 5 (shift 35) - to low
+            "cmp {len}, 6",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 5]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 35",
+            "or {lo}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 205f",
+
+            // Byte 6 (shift 42) - to low
+            "cmp {len}, 7",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 6]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 42",
+            "or {lo}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 206f",
+
+            // Byte 7 (shift 49) - to low
+            "cmp {len}, 8",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 7]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 49",
+            "or {lo}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 207f",
+
+            // Byte 8 (shift 56) - to low
+            "cmp {len}, 9",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 8]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 56",
+            "or {lo}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 208f",
+
+            // Byte 9 (shift 63) - spans boundary: 1 bit to low, 6 bits to high
+            "cmp {len}, 10",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 9]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x01",
+            "shl {t2}, 63",
+            "or {lo}, {t2}",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shr {t2}, 1",
+            "or {hi}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 209f",
+
+            // Byte 10 (shift 70) - to high (shift 70-64=6)
+            "cmp {len}, 11",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 10]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 6",
+            "or {hi}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 210f",
+
+            // Byte 11 (shift 77) - to high (shift 77-64=13)
+            "cmp {len}, 12",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 11]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 13",
+            "or {hi}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 211f",
+
+            // Byte 12 (shift 84) - to high (shift 84-64=20)
+            "cmp {len}, 13",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 12]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 20",
+            "or {hi}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 212f",
+
+            // Byte 13 (shift 91) - to high (shift 91-64=27)
+            "cmp {len}, 14",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 13]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 27",
+            "or {hi}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 213f",
+
+            // Byte 14 (shift 98) - to high (shift 98-64=34)
+            "cmp {len}, 15",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 14]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 34",
+            "or {hi}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 214f",
+
+            // Byte 15 (shift 105) - to high (shift 105-64=41)
+            "cmp {len}, 16",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 15]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 41",
+            "or {hi}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 215f",
+
+            // Byte 16 (shift 112) - to high (shift 112-64=48)
+            "cmp {len}, 17",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 16]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 48",
+            "or {hi}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 216f",
+
+            // Byte 17 (shift 119) - to high (shift 119-64=55)
+            "cmp {len}, 18",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 17]",
+            "mov {t2}, {tmp}",
+            "and {t2}, 0x7F",
+            "shl {t2}, 55",
+            "or {hi}, {t2}",
+            "test {tmp}, 0x80",
+            "jz 217f",
+
+            // Byte 18 (shift 126) - to high, only 2 bits valid (shift 126-64=62)
+            "cmp {len}, 19",
+            "jb 300f",
+            "movzx {tmp}, byte ptr [{ptr} + 18]",
+            "test {tmp}, 0x80",
+            "jnz 300f",                      // error if continuation set
+            "and {tmp}, 0x03",
+            "shl {tmp}, 62",
+            "or {hi}, {tmp}",
+            "mov {con}, 19",
+            "jmp 400f",
+
+            // Exit points
+            "200:", "mov {con}, 1", "jmp 400f",
+            "201:", "mov {con}, 2", "jmp 400f",
+            "202:", "mov {con}, 3", "jmp 400f",
+            "203:", "mov {con}, 4", "jmp 400f",
+            "204:", "mov {con}, 5", "jmp 400f",
+            "205:", "mov {con}, 6", "jmp 400f",
+            "206:", "mov {con}, 7", "jmp 400f",
+            "207:", "mov {con}, 8", "jmp 400f",
+            "208:", "mov {con}, 9", "jmp 400f",
+            "209:", "mov {con}, 10", "jmp 400f",
+            "210:", "mov {con}, 11", "jmp 400f",
+            "211:", "mov {con}, 12", "jmp 400f",
+            "212:", "mov {con}, 13", "jmp 400f",
+            "213:", "mov {con}, 14", "jmp 400f",
+            "214:", "mov {con}, 15", "jmp 400f",
+            "215:", "mov {con}, 16", "jmp 400f",
+            "216:", "mov {con}, 17", "jmp 400f",
+            "217:", "mov {con}, 18", "jmp 400f",
+
+            "300:",                          // error
+            "xor {lo}, {lo}",
+            "xor {hi}, {hi}",
+            "xor {con}, {con}",
+
+            "400:",                          // final exit
+
+            ptr = in(reg) ptr,
+            len = in(reg) buf_len,
+            lo = out(reg) result_lo,
+            hi = out(reg) result_hi,
+            con = out(reg) consumed,
+            tmp = out(reg) _,
+            t2 = out(reg) _,
+            options(readonly, nostack),
+        );
+    }
+    (((result_hi as u128) << 64) | (result_lo as u128), consumed)
+}
+
 /// Decode a u128 from ULEB128 (fallback).
-#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
+#[cfg(not(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", feature = "asm")
+)))]
 #[inline(always)]
 pub fn decode_uleb128_u128(buf: &[u8]) -> (u128, usize) {
     let mut result: u128 = 0;
