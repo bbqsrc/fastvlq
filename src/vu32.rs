@@ -450,25 +450,109 @@ pub const fn decode_vu32(n: Vu32) -> u32 {
     }
 }
 
-// Lookup tables for branchless decode
+// Lookup tables for branchless decode (must be static for asm sym operand)
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+static PREFIX_MASKS_32: [u8; 6] = [0, 0x7F, 0x3F, 0x1F, 0x0F, 0x07];
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 const PREFIX_MASKS_32: [u8; 6] = [0, 0x7F, 0x3F, 0x1F, 0x0F, 0x07];
-const OFFSETS_32: [u32; 6] = [
-    0, 0,         // len=1
-    128,       // len=2
-    16512,     // len=3
-    2113664,   // len=4
-    270549120, // len=5
+
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+static OFFSETS_32: [u32; 6] = [0, 0, 128, 16512, 2113664, 270549120];
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
+const OFFSETS_32: [u32; 6] = [0, 0, 128, 16512, 2113664, 270549120];
+
+// Byte masks for branchless decode: masks off unused bytes in 4-byte load
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+static BYTE_MASKS_32: [u32; 6] = [
+    0, 0,          // len=1: 0 data bytes
+    0xFF,       // len=2: 1 data byte
+    0xFFFF,     // len=3: 2 data bytes
+    0xFFFFFF,   // len=4: 3 data bytes
+    0xFFFFFFFF, // len=5: 4 data bytes
 ];
 
-/// Decode a u32 from a byte slice.
-///
-/// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
+/// Decode a u32 from a byte slice using branchless aarch64 assembly.
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
     let first = *data.first()?;
     let len = decode_len_vu32(first) as usize;
 
-    // u32 max length is 5 bytes
+    if len > 5 {
+        return None;
+    }
+    if data.len() < len {
+        return None;
+    }
+
+    // Fast path: if we have at least 5 bytes, use branchless asm
+    if data.len() >= 5 {
+        let value: u32;
+
+        // SAFETY: We've verified data.len() >= 5, so loading 4 bytes from data+1 is safe.
+        // Table lookups are indexed by len which is guaranteed to be 1-5.
+        unsafe {
+            core::arch::asm!(
+                // Load 4 bytes from data+1 (branchless - always load full 4 bytes)
+                "ldr    w5, [{ptr}, #1]",
+
+                // Load byte mask from table (indexed by len)
+                "ldr    w6, [{byte_masks}, {len}, lsl #2]",
+                "and    w5, w5, w6",            // raw = loaded_bytes & mask
+
+                // Compute shift = (len-1) * 8
+                "sub    w6, {len:w}, #1",
+                "lsl    w6, w6, #3",            // shift = (len-1) * 8
+
+                // Load prefix mask and compute prefix_bits
+                "ldrb   w8, [{prefix_masks}, {len}]",
+                "and    w8, w8, {first:w}",     // first & PREFIX_MASKS[len]
+                "lsl    w8, w8, w6",            // << shift
+
+                // Combine: raw | prefix_bits
+                "orr    w5, w5, w8",
+
+                // Add offset
+                "ldr    w8, [{offsets}, {len}, lsl #2]",
+                "add    {out:w}, w5, w8",
+
+                ptr = in(reg) data.as_ptr(),
+                len = in(reg) len as u64,
+                first = in(reg) first as u64,
+                byte_masks = in(reg) BYTE_MASKS_32.as_ptr(),
+                prefix_masks = in(reg) PREFIX_MASKS_32.as_ptr(),
+                offsets = in(reg) OFFSETS_32.as_ptr(),
+                out = out(reg) value,
+                out("w5") _,
+                out("w6") _,
+                out("w8") _,
+                options(pure, readonly, nostack),
+            );
+        }
+
+        Some((value, len))
+    } else {
+        // Slow path for short slices: use match-based decode
+        let raw = match len {
+            1 => 0u32,
+            2 => u32::from_le_bytes([data[1], 0, 0, 0]),
+            3 => u32::from_le_bytes([data[1], data[2], 0, 0]),
+            4 => u32::from_le_bytes([data[1], data[2], data[3], 0]),
+            _ => unreachable!(),
+        };
+        let shift = (len - 1) << 3;
+        let prefix_bits = ((first & PREFIX_MASKS_32[len]) as u32) << shift;
+        Some(((prefix_bits | raw) + OFFSETS_32[len], len))
+    }
+}
+
+/// Decode a u32 from a byte slice (fallback for non-aarch64 or no asm feature).
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
+#[inline(always)]
+pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
+    let first = *data.first()?;
+    let len = decode_len_vu32(first) as usize;
+
     if len > 5 {
         return None;
     }

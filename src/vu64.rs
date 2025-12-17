@@ -652,8 +652,26 @@ pub const fn decode_vu64(n: Vu64) -> u64 {
     }
 }
 
-// Lookup tables for branchless decode
+// Lookup tables for branchless decode (must be static for asm sym operand)
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+static PREFIX_MASKS_64: [u8; 10] = [0, 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00, 0x00];
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 const PREFIX_MASKS_64: [u8; 10] = [0, 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00, 0x00];
+
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+static OFFSETS_64: [u64; 10] = [
+    0,
+    0,                 // len=1
+    128,               // len=2
+    16512,             // len=3
+    2113664,           // len=4
+    270549120,         // len=5
+    34630287488,       // len=6
+    4432676798592,     // len=7
+    567382630219904,   // len=8
+    72624976668147840, // len=9
+];
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 const OFFSETS_64: [u64; 10] = [
     0,
     0,                 // len=1
@@ -667,9 +685,108 @@ const OFFSETS_64: [u64; 10] = [
     72624976668147840, // len=9
 ];
 
-/// Decode a u64 from a byte slice.
+// Byte masks for branchless decode: masks off unused bytes in 8-byte load
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+static BYTE_MASKS_64: [u64; 10] = [
+    0,
+    0,                  // len=1: 0 data bytes
+    0xFF,               // len=2: 1 data byte
+    0xFFFF,             // len=3: 2 data bytes
+    0xFFFFFF,           // len=4: 3 data bytes
+    0xFFFFFFFF,         // len=5: 4 data bytes
+    0xFFFFFFFFFF,       // len=6: 5 data bytes
+    0xFFFFFFFFFFFF,     // len=7: 6 data bytes
+    0xFFFFFFFFFFFFFF,   // len=8: 7 data bytes
+    0xFFFFFFFFFFFFFFFF, // len=9: 8 data bytes
+];
+
+/// Decode a u64 from a byte slice using branchless aarch64 assembly.
 ///
-/// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
+/// This version requires the slice to have at least 9 bytes for the fast path.
+/// For shorter slices, it falls back to the safe Rust implementation.
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+#[inline(always)]
+pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
+    let first = *data.first()?;
+    let len = decode_len_vu64(first) as usize;
+
+    if data.len() < len {
+        return None;
+    }
+
+    // Fast path: if we have at least 9 bytes, use branchless asm
+    if data.len() >= 9 {
+        let value: u64;
+
+        // SAFETY: We've verified data.len() >= 9, so loading 8 bytes from data+1 is safe.
+        // Table lookups are indexed by len which is guaranteed to be 1-9.
+        unsafe {
+            core::arch::asm!(
+                // Load 8 bytes from data+1 (branchless - always load full 8 bytes)
+                "ldr    x5, [{ptr}, #1]",
+
+                // Load byte mask from table (indexed by len)
+                "ldr    x6, [{byte_masks}, {len}, lsl #3]",
+                "and    x5, x5, x6",            // raw = loaded_bytes & mask
+
+                // Compute shift = (len-1) * 8, capped at 56 for len=9
+                "sub    x6, {len}, #1",
+                "lsl    x6, x6, #3",            // shift = (len-1) * 8
+                "mov    x7, #56",
+                "cmp    x6, #56",
+                "csel   x6, x6, x7, lo",        // min(shift, 56)
+
+                // Load prefix mask and compute prefix_bits
+                "ldrb   w8, [{prefix_masks}, {len}]",
+                "and    x8, x8, {first}",       // first & PREFIX_MASKS[len]
+                "lsl    x8, x8, x6",            // << shift
+
+                // Combine: raw | prefix_bits
+                "orr    x5, x5, x8",
+
+                // Add offset
+                "ldr    x8, [{offsets}, {len}, lsl #3]",
+                "add    {out}, x5, x8",
+
+                ptr = in(reg) data.as_ptr(),
+                len = in(reg) len as u64,
+                first = in(reg) first as u64,
+                byte_masks = in(reg) BYTE_MASKS_64.as_ptr(),
+                prefix_masks = in(reg) PREFIX_MASKS_64.as_ptr(),
+                offsets = in(reg) OFFSETS_64.as_ptr(),
+                out = out(reg) value,
+                out("x5") _,
+                out("x6") _,
+                out("x7") _,
+                out("x8") _,
+                options(pure, readonly, nostack),
+            );
+        }
+
+        Some((value, len))
+    } else {
+        // Slow path for short slices: use match-based decode
+        let raw = match len {
+            1 => 0u64,
+            2 => u64::from_le_bytes([data[1], 0, 0, 0, 0, 0, 0, 0]),
+            3 => u64::from_le_bytes([data[1], data[2], 0, 0, 0, 0, 0, 0]),
+            4 => u64::from_le_bytes([data[1], data[2], data[3], 0, 0, 0, 0, 0]),
+            5 => u64::from_le_bytes([data[1], data[2], data[3], data[4], 0, 0, 0, 0]),
+            6 => u64::from_le_bytes([data[1], data[2], data[3], data[4], data[5], 0, 0, 0]),
+            7 => u64::from_le_bytes([data[1], data[2], data[3], data[4], data[5], data[6], 0, 0]),
+            8 => u64::from_le_bytes([
+                data[1], data[2], data[3], data[4], data[5], data[6], data[7], 0,
+            ]),
+            _ => unreachable!(),
+        };
+        let shift = ((len - 1) << 3).min(56);
+        let prefix_bits = ((first & PREFIX_MASKS_64[len]) as u64) << shift;
+        Some(((prefix_bits | raw) + OFFSETS_64[len], len))
+    }
+}
+
+/// Decode a u64 from a byte slice (fallback for non-aarch64 or no asm feature).
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 #[inline(always)]
 pub fn decode_vu64_slice(data: &[u8]) -> Option<(u64, usize)> {
     let first = *data.first()?;
