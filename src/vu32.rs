@@ -477,7 +477,9 @@ static BYTE_MASKS_32: [u32; 6] = [
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
-    if data.is_empty() {
+    let data_len = data.len();
+
+    if data_len == 0 {
         return None;
     }
 
@@ -486,81 +488,78 @@ pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
 
     // SAFETY: We've verified data is not empty. The asm checks bounds via prefix bits.
     // For invalid prefixes (len > data.len()), behavior is undefined but we trust valid input.
+    const MAGIC: u32 = 0x10204080;
+
     unsafe {
         core::arch::asm!(
-            // Load first byte
+            // Load prefix and compute index via CLZ
             "ldrb   w3, [{ptr}]",
+            "clz    w4, w3",
+            "sub    w4, w4, #24",              // index = len - 1 (0-4)
 
-            // Dispatch based on prefix bits using tbnz (test bit, branch if not zero)
-            // len=1: 1xxxxxxx (bit 7 set)
-            // len=2: 01xxxxxx (bit 6 set)
-            // len=3: 001xxxxx (bit 5 set)
-            // len=4: 0001xxxx (bit 4 set)
-            // len=5: 00001xxx (bit 3 set)
-            "tbnz   w3, #7, 10f",
-            "tbnz   w3, #6, 20f",
-            "tbnz   w3, #5, 30f",
-            "tbnz   w3, #4, 40f",
-            "b      50f",
+            // Computed branch to fixed-size (32-byte) handlers
+            "adr    x10, 10f",
+            "add    x10, x10, x4, lsl #5",     // index * 32 (x4 upper bits are 0 from sub)
+            "br     x10",
 
-            // len=1: just mask off high bit
+            // len=1 handler (8 instructions = 32 bytes)
             "10:",
             "and    {out:w}, w3, #0x7F",
             "mov    {len:w}, #1",
             "b      100f",
+            "nop", "nop", "nop", "nop", "nop",
 
-            // len=2: 1 data byte
-            "20:",
+            // len=2 handler (8 instructions)
             "ldrb   w5, [{ptr}, #1]",
             "add    w5, w5, #0x80",
             "and    w6, w3, #0x3F",
             "add    {out:w}, w5, w6, lsl #8",
             "mov    {len:w}, #2",
             "b      100f",
+            "nop", "nop",
 
-            // len=3: 2 data bytes - single 16-bit load
-            "30:",
-            "ldrh   w5, [{ptr}, #1]",           // load bytes 1-2 as LE 16-bit
-            "mov    w6, #0x4080",               // combined offset (0x80 + 0x40<<8)
+            // len=3 handler (8 instructions)
+            "ldrh   w5, [{ptr}, #1]",
+            "ubfx   w6, {magic:w}, #0, #16",
+            "ubfiz  w7, w3, #16, #5",
             "add    w5, w5, w6",
-            "and    w6, w3, #0x1F",
-            "add    {out:w}, w5, w6, lsl #16",
+            "add    {out:w}, w5, w7",
             "mov    {len:w}, #3",
             "b      100f",
+            "nop",
 
-            // len=4: 3 data bytes - 32-bit load + mask
-            "40:",
-            "ldr    w5, [{ptr}, #1]",           // load 4 bytes
-            "and    w5, w5, #0xFFFFFF",         // mask to 24 bits
-            "mov    w6, #0x4080",
-            "movk   w6, #0x20, lsl #16",        // w6 = 0x204080
+            // len=4 handler (8 instructions exactly)
+            "ldr    w5, [{ptr}, #1]",
+            "ubfx   w5, w5, #0, #24",
+            "ubfx   w6, {magic:w}, #0, #24",
+            "ubfiz  w7, w3, #24, #4",
             "add    w5, w5, w6",
-            "and    w6, w3, #0x0F",
-            "add    {out:w}, w5, w6, lsl #24",
+            "add    {out:w}, w5, w7",
             "mov    {len:w}, #4",
             "b      100f",
 
-            // len=5: 4 data bytes - single 32-bit load
-            "50:",
-            "ldr    w5, [{ptr}, #1]",           // load all 4 data bytes
-            "mov    w6, #0x4080",
-            "movk   w6, #0x1020, lsl #16",      // w6 = 0x10204080
-            "add    {out:w}, w5, w6",
+            // len=5 handler (8 instructions)
+            "ldr    w5, [{ptr}, #1]",
+            "add    {out:w}, w5, {magic:w}",
             "mov    {len:w}, #5",
+            "b      100f",
+            "nop", "nop", "nop", "nop",
 
             "100:",
 
             ptr = in(reg) data.as_ptr(),
+            magic = in(reg) MAGIC,
             out = out(reg) value,
             len = out(reg) len,
-            out("w3") _,
-            out("w5") _, out("w6") _,
+            out("w3") _, out("w4") _,
+            out("w5") _, out("w6") _, out("w7") _,
+            out("x10") _,
             options(pure, readonly, nostack),
         );
     }
 
     // Bounds check after decode
-    if len > data.len() {
+    if len > data_len {
         return None;
     }
 
