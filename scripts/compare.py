@@ -117,7 +117,7 @@ def parse_criterion_output(criterion_dir: Path) -> dict:
             if not bench_dir.is_dir():
                 continue
 
-            # Parse benchmark name: "encode_fastvint" or "decode_leb128"
+            # Parse benchmark name: "encode_fastvint", "decode_leb128", or "decode_control"
             bench_name = bench_dir.name
             if "_fastvint" in bench_name:
                 impl = "fastvint"
@@ -125,6 +125,9 @@ def parse_criterion_output(criterion_dir: Path) -> dict:
             elif "_leb128" in bench_name:
                 impl = "leb128"
                 operation = bench_name.replace("_leb128", "")
+            elif "_control" in bench_name:
+                impl = "control"
+                operation = bench_name.replace("_control", "")
             else:
                 continue
 
@@ -176,22 +179,29 @@ def generate_chart(type_name: str, benchmarks: dict, output_dir: Path) -> Path:
             ax.set_visible(False)
             continue
 
+        is_decode = op_name == "decode"
+
         # Average pos/neg variants for signed types
         averaged_data = {}
         for value, times in data.items():
             # Strip _pos/_neg suffix and average
             base = value.replace("_pos", "").replace("_neg", "")
             if base not in averaged_data:
-                averaged_data[base] = {"fastvint": [], "leb128": []}
+                averaged_data[base] = {"fastvint": [], "leb128": [], "control": []}
             averaged_data[base]["fastvint"].append(times["fastvint"])
             averaged_data[base]["leb128"].append(times["leb128"])
+            if "control" in times:
+                averaged_data[base]["control"].append(times["control"])
 
         # Compute averages
-        data = {
-            k: {"fastvint": sum(v["fastvint"]) / len(v["fastvint"]),
-                "leb128": sum(v["leb128"]) / len(v["leb128"])}
-            for k, v in averaged_data.items()
-        }
+        data = {}
+        for k, v in averaged_data.items():
+            data[k] = {
+                "fastvint": sum(v["fastvint"]) / len(v["fastvint"]),
+                "leb128": sum(v["leb128"]) / len(v["leb128"]),
+            }
+            if v["control"]:
+                data[k]["control"] = sum(v["control"]) / len(v["control"])
 
         # Sort values by byte size
         value_order = [f"{i}_byte" for i in range(1, 18)]
@@ -200,6 +210,11 @@ def generate_chart(type_name: str, benchmarks: dict, output_dir: Path) -> Path:
         x = range(len(sorted_values))
         fastvint_times = [data[v]["fastvint"] for v in sorted_values]
         leb128_times = [data[v]["leb128"] for v in sorted_values]
+
+        # Plot control first (so it's behind)
+        if is_decode:
+            control_times = [data[v]["control"] for v in sorted_values]
+            ax.plot(x, control_times, '^--', color="#95a5a6", linewidth=1.5, markersize=6, label="control")
 
         ax.plot(x, fastvint_times, 'o-', color="#2ecc71", linewidth=2, markersize=8, label="fastvint")
         ax.plot(x, leb128_times, 's-', color="#3498db", linewidth=2, markersize=8, label="leb128")
@@ -234,8 +249,10 @@ def generate_chart(type_name: str, benchmarks: dict, output_dir: Path) -> Path:
     return output_path
 
 
-def generate_html(chart_paths: list[Path], output_dir: Path, system_info: dict):
-    """Generate HTML page embedding all charts."""
+def generate_html(chart_paths: list[Path], output_dir: Path, system_info: dict, results: dict):
+    """Generate HTML page embedding all charts and tables."""
+
+    tables_html = generate_tables_html(results)
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -250,6 +267,8 @@ def generate_html(chart_paths: list[Path], output_dir: Path, system_info: dict):
             background: #f5f5f5;
         }}
         h1 {{ color: #333; }}
+        h2 {{ color: #444; margin-top: 30px; }}
+        h3 {{ color: #555; margin-top: 20px; }}
         .system-info {{
             background: white;
             padding: 15px 20px;
@@ -283,6 +302,38 @@ def generate_html(chart_paths: list[Path], output_dir: Path, system_info: dict):
             max-width: 100%;
             height: auto;
         }}
+        .tables {{
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        table {{
+            border-collapse: collapse;
+            margin: 10px 0;
+            font-size: 14px;
+        }}
+        th, td {{
+            border: 1px solid #ddd;
+            padding: 8px 12px;
+            text-align: right;
+        }}
+        th {{
+            background: #f8f8f8;
+            font-weight: 600;
+        }}
+        td:first-child, th:first-child {{
+            text-align: left;
+        }}
+        .fastvint {{
+            color: #27ae60;
+            font-weight: 600;
+        }}
+        .leb128 {{
+            color: #2980b9;
+            font-weight: 600;
+        }}
     </style>
 </head>
 <body>
@@ -309,7 +360,10 @@ def generate_html(chart_paths: list[Path], output_dir: Path, system_info: dict):
     </div>
 """
 
-    html += """</body>
+    html += f"""    <div class="tables">
+{tables_html}
+    </div>
+</body>
 </html>
 """
 
@@ -332,18 +386,111 @@ def generate_summary(results: dict, output_dir: Path):
                 lb = times["leb128"]
                 speedup = lb / fv
                 key = f"{operation}/{value}"
-                summary[type_name][key] = {
+                entry = {
                     "fastvint_ns": round(fv, 2),
                     "leb128_ns": round(lb, 2),
                     "speedup": round(speedup, 2),
                     "winner": "fastvint" if speedup > 1 else "leb128"
                 }
+                if "control" in times:
+                    ctrl = times["control"]
+                    entry["control_ns"] = round(ctrl, 2)
+                    entry["fastvint_vs_control"] = round(fv / ctrl, 2)
+                summary[type_name][key] = entry
 
     output_path = output_dir / "summary.json"
     with open(output_path, "w") as f:
         json.dump(summary, f, indent=2)
 
     return output_path
+
+
+def generate_tables_html(results: dict) -> str:
+    """Generate HTML tables showing raw times and speed comparisons."""
+    html = ""
+
+    type_order = ["u32", "i32", "u64", "i64", "u128", "i128"]
+    sorted_types = sorted(results.keys(), key=lambda t: type_order.index(t) if t in type_order else 999)
+
+    for type_name in sorted_types:
+        benchmarks = results[type_name]
+
+        # Group by operation
+        encode_data = {}
+        decode_data = {}
+
+        for (operation, value), times in benchmarks.items():
+            if "fastvint" not in times or "leb128" not in times:
+                continue
+            if operation == "encode":
+                encode_data[value] = times
+            elif operation == "decode":
+                decode_data[value] = times
+
+        # Average pos/neg variants for signed types
+        def average_variants(data):
+            averaged = {}
+            for value, times in data.items():
+                base = value.replace("_pos", "").replace("_neg", "")
+                if base not in averaged:
+                    averaged[base] = {"fastvint": [], "leb128": [], "control": []}
+                averaged[base]["fastvint"].append(times["fastvint"])
+                averaged[base]["leb128"].append(times["leb128"])
+                if "control" in times:
+                    averaged[base]["control"].append(times["control"])
+
+            result = {}
+            for k, v in averaged.items():
+                result[k] = {
+                    "fastvint": sum(v["fastvint"]) / len(v["fastvint"]),
+                    "leb128": sum(v["leb128"]) / len(v["leb128"]),
+                }
+                if v["control"]:
+                    result[k]["control"] = sum(v["control"]) / len(v["control"])
+            return result
+
+        encode_data = average_variants(encode_data)
+        decode_data = average_variants(decode_data)
+
+        # Sort by byte size
+        value_order = [f"{i}_byte" for i in range(1, 18)]
+        sort_key = lambda v: value_order.index(v) if v in value_order else 999
+
+        html += f'<h2>{type_name}</h2>\n'
+
+        # Encode table
+        if encode_data:
+            html += '<h3>Encode</h3>\n<table>\n'
+            html += '<tr><th>Size</th><th>fastvint (ns)</th><th>leb128 (ns)</th><th>leb→vint</th></tr>\n'
+
+            for value in sorted(encode_data.keys(), key=sort_key):
+                times = encode_data[value]
+                fv = times["fastvint"]
+                lb = times["leb128"]
+                leb_to_vint = lb / fv
+                winner = "fastvint" if leb_to_vint > 1 else "leb128"
+                html += f'<tr><td>{value}</td><td>{fv:.2f}</td><td>{lb:.2f}</td><td class="{winner}">{leb_to_vint:.2f}x</td></tr>\n'
+            html += '</table>\n'
+
+        # Decode table
+        if decode_data:
+            html += '<h3>Decode</h3>\n<table>\n'
+            html += '<tr><th>Size</th><th>control (ns)</th><th>fastvint (ns)</th><th>leb128 (ns)</th><th>ctrl→leb</th><th>ctrl→vint</th><th>leb→vint</th></tr>\n'
+
+            for value in sorted(decode_data.keys(), key=sort_key):
+                times = decode_data[value]
+                ctrl = times["control"]
+                fv = times["fastvint"]
+                lb = times["leb128"]
+                ctrl_to_leb = lb / ctrl
+                ctrl_to_vint = fv / ctrl
+                leb_to_vint = lb / fv
+                winner = "fastvint" if leb_to_vint > 1 else "leb128"
+                html += f'<tr><td>{value}</td><td>{ctrl:.2f}</td><td>{fv:.2f}</td><td>{lb:.2f}</td>'
+                html += f'<td>{ctrl_to_leb:.2f}x</td><td>{ctrl_to_vint:.2f}x</td><td class="{winner}">{leb_to_vint:.2f}x</td></tr>\n'
+            html += '</table>\n'
+
+    return html
 
 
 def main():
@@ -378,7 +525,7 @@ def main():
     system_info = get_system_info()
 
     print("Generating HTML...")
-    html_path = generate_html(chart_paths, criterion_dir, system_info)
+    html_path = generate_html(chart_paths, criterion_dir, system_info, results)
 
     print(f"\nDone! Open {html_path}")
     return 0
