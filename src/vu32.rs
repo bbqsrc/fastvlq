@@ -2,6 +2,9 @@
 
 use core::fmt::{Debug, Display};
 
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+use crate::vu64::decode_vu64_slice;
+
 pub(crate) const VU32_BUF_SIZE: usize = 5;
 
 /// Decode length from first byte for u32 (max 5 bytes).
@@ -450,149 +453,75 @@ pub const fn decode_vu32(n: Vu32) -> u32 {
     }
 }
 
-// Lookup tables for branchless decode (must be static for asm sym operand)
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-static PREFIX_MASKS_32: [u8; 6] = [0, 0x7F, 0x3F, 0x1F, 0x0F, 0x07];
-#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
-const PREFIX_MASKS_32: [u8; 6] = [0, 0x7F, 0x3F, 0x1F, 0x0F, 0x07];
-
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-static OFFSETS_32: [u32; 6] = [0, 0, 128, 16512, 2113664, 270549120];
-#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
-const OFFSETS_32: [u32; 6] = [0, 0, 128, 16512, 2113664, 270549120];
-
 // Byte masks for branchless decode: masks off unused bytes in 4-byte load
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 static BYTE_MASKS_32: [u32; 6] = [
-    0, 0,       // len=1: 0 data bytes (not used in fast path)
+    0, 0,          // len=1: 0 data bytes (not used in fast path)
     0xFF,       // len=2: 1 data byte
     0xFFFF,     // len=3: 2 data bytes
     0xFFFFFF,   // len=4: 3 data bytes
     0xFFFFFFFF, // len=5: 4 data bytes
 ];
 
-/// Decode a u32 from a byte slice using unrolled aarch64 assembly.
-/// Uses tbnz-based dispatch (test bit and branch) for all lengths.
-/// Zero table lookups - offset is baked into per-byte constants.
+/// Decode a u32 from a byte slice by delegating to the u64 decoder.
+/// Returns (0, 0) for empty or invalid input.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
-pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
-    let data_len = data.len();
-
-    if data_len == 0 {
-        return None;
-    }
-
-    let value: u32;
-    let len: usize;
-
-    // SAFETY: We've verified data is not empty. The asm checks bounds via prefix bits.
-    // For invalid prefixes (len > data.len()), behavior is undefined but we trust valid input.
-    const MAGIC: u32 = 0x10204080;
-
-    unsafe {
-        core::arch::asm!(
-            // Load prefix and compute index via CLZ
-            "ldrb   w3, [{ptr}]",
-            "clz    w4, w3",
-            "sub    w4, w4, #24",              // index = len - 1 (0-4)
-
-            // Computed branch to fixed-size (32-byte) handlers
-            "adr    x10, 10f",
-            "add    x10, x10, x4, lsl #5",     // index * 32 (x4 upper bits are 0 from sub)
-            "br     x10",
-
-            // len=1 handler (8 instructions = 32 bytes)
-            "10:",
-            "and    {out:w}, w3, #0x7F",
-            "mov    {len:w}, #1",
-            "b      100f",
-            "nop", "nop", "nop", "nop", "nop",
-
-            // len=2 handler (8 instructions)
-            "ldrb   w5, [{ptr}, #1]",
-            "add    w5, w5, #0x80",
-            "and    w6, w3, #0x3F",
-            "add    {out:w}, w5, w6, lsl #8",
-            "mov    {len:w}, #2",
-            "b      100f",
-            "nop", "nop",
-
-            // len=3 handler (8 instructions)
-            "ldrh   w5, [{ptr}, #1]",
-            "ubfx   w6, {magic:w}, #0, #16",
-            "ubfiz  w7, w3, #16, #5",
-            "add    w5, w5, w6",
-            "add    {out:w}, w5, w7",
-            "mov    {len:w}, #3",
-            "b      100f",
-            "nop",
-
-            // len=4 handler (8 instructions exactly)
-            "ldr    w5, [{ptr}, #1]",
-            "ubfx   w5, w5, #0, #24",
-            "ubfx   w6, {magic:w}, #0, #24",
-            "ubfiz  w7, w3, #24, #4",
-            "add    w5, w5, w6",
-            "add    {out:w}, w5, w7",
-            "mov    {len:w}, #4",
-            "b      100f",
-
-            // len=5 handler (8 instructions)
-            "ldr    w5, [{ptr}, #1]",
-            "add    {out:w}, w5, {magic:w}",
-            "mov    {len:w}, #5",
-            "b      100f",
-            "nop", "nop", "nop", "nop",
-
-            "100:",
-
-            ptr = in(reg) data.as_ptr(),
-            magic = in(reg) MAGIC,
-            out = out(reg) value,
-            len = out(reg) len,
-            out("w3") _, out("w4") _,
-            out("w5") _, out("w6") _, out("w7") _,
-            out("x10") _,
-            options(pure, readonly, nostack),
-        );
-    }
-
-    // Bounds check after decode
-    if len > data_len {
-        return None;
-    }
-
-    Some((value, len))
+pub fn decode_vu32_slice(data: &[u8]) -> (u32, usize) {
+    let (value, len) = decode_vu64_slice(data);
+    (value as u32, len)
 }
 
 /// Decode a u32 from a byte slice (fallback for non-aarch64 or no asm feature).
+/// Returns (0, 0) for empty or invalid input.
 #[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 #[inline(always)]
-pub fn decode_vu32_slice(data: &[u8]) -> Option<(u32, usize)> {
-    let first = *data.first()?;
-    let len = decode_len_vu32(first) as usize;
-
-    if len > 5 {
-        return None;
-    }
-    if data.len() < len {
-        return None;
-    }
-
-    // Match on length to create fixed-size arrays for from_le_bytes
-    let raw = match len {
-        1 => 0u32,
-        2 => u32::from_le_bytes([data[1], 0, 0, 0]),
-        3 => u32::from_le_bytes([data[1], data[2], 0, 0]),
-        4 => u32::from_le_bytes([data[1], data[2], data[3], 0]),
-        _ => u32::from_le_bytes([data[1], data[2], data[3], data[4]]),
+pub fn decode_vu32_slice(data: &[u8]) -> (u32, usize) {
+    let Some(&p) = data.first() else {
+        return (0, 0);
     };
 
-    // Table lookups for prefix mask and offset
-    let shift = (len - 1) << 3;
-    let prefix_bits = ((first & PREFIX_MASKS_32[len]) as u32) << shift;
-    Some(((prefix_bits | raw) + OFFSETS_32[len], len))
+    // len=1: prefix >= 0x80 (1xxx_xxxx)
+    if p >= 0x80 {
+        return ((p & 0x7F) as u32, 1);
+    }
+
+    // len=2: prefix >= 0x40 (01xx_xxxx)
+    if p >= 0x40 {
+        if data.len() < 2 {
+            return (0, 0);
+        }
+        let raw = data[1] as u32;
+        return (((((p & 0x3F) as u32) << 8) | raw).wrapping_add(128), 2);
+    }
+
+    // len=3: prefix >= 0x20 (001x_xxxx)
+    if p >= 0x20 {
+        if data.len() < 3 {
+            return (0, 0);
+        }
+        let raw = u16::from_le_bytes([data[1], data[2]]) as u32;
+        return (((((p & 0x1F) as u32) << 16) | raw).wrapping_add(16512), 3);
+    }
+
+    // len=4: prefix >= 0x10 (0001_xxxx)
+    if p >= 0x10 {
+        if data.len() < 4 {
+            return (0, 0);
+        }
+        let raw = u32::from_le_bytes([data[1], data[2], data[3], 0]) & 0xFF_FFFF;
+        return (((((p & 0x0F) as u32) << 24) | raw).wrapping_add(2113664), 4);
+    }
+
+    // len=5: prefix >= 0x08 (0000_1xxx)
+    if data.len() < 5 {
+        return (0, 0);
+    }
+    let raw = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
+    (
+        ((((p & 0x07) as u64) << 32) | raw as u64).wrapping_add(270549120) as u32,
+        5,
+    )
 }
 
 /// An unsigned 32-bit integer in variable-length quantity encoding.

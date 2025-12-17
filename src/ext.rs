@@ -1,7 +1,7 @@
 //! Async VLQ extension traits.
 
 /// Extension trait for reading VLQ-encoded integers from an async reader.
-pub trait AsyncReadVlqExt {
+pub trait AsyncReadVintExt {
     /// Read a variable-length `u32` asynchronously.
     fn read_vu32(&mut self) -> impl core::future::Future<Output = std::io::Result<u32>>;
     /// Read a variable-length `i32` asynchronously.
@@ -17,7 +17,7 @@ pub trait AsyncReadVlqExt {
 }
 
 /// Extension trait for writing VLQ-encoded integers to an async writer.
-pub trait AsyncWriteVlqExt {
+pub trait AsyncWriteVintExt {
     /// Write a variable-length `u32` asynchronously.
     fn write_vu32(&mut self, n: u32) -> impl core::future::Future<Output = std::io::Result<()>>;
     /// Write a variable-length `i32` asynchronously.

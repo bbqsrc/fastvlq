@@ -150,46 +150,103 @@ pub fn encode_ileb128_i32(mut value: i32, buf: &mut [u8; ILEB128_I32_BUF_SIZE]) 
 
 /// Decode an i32 from ILEB128.
 ///
-/// Returns (value, bytes_consumed).
+/// Returns (value, bytes_consumed). Returns (0, 0) for empty/invalid input.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn decode_ileb128_i32(buf: &[u8]) -> (i32, usize) {
+    let buf_len = buf.len();
+    if buf_len == 0 {
+        return (0, 0);
+    }
+
     let result: i32;
     let consumed: usize;
     let ptr = buf.as_ptr();
-    // SAFETY: Reads up to 5 bytes.
+    // SAFETY: We check bounds before each byte read.
     unsafe {
         core::arch::asm!(
-            "mov    w0, #0",            // result
-            "mov    w2, #0",            // byte index
-            "mov    w5, #0",            // shift amount
+            // Byte 0 (shift 0)
+            "cmp    w9, #1",
+            "b.lo   300f",
+            "ldrb   w3, [x1]",
+            "and    w0, w3, #0x7F",
+            "tbz    w3, #7, 200f",
 
-            "100:",  // loop
-            "ldrb   w3, [x1, w2, uxtw]",
-            "and    w4, w3, #0x7F",     // extract 7 bits
-            "lsl    w4, w4, w5",        // shift into position
-            "orr    w0, w0, w4",        // accumulate
-            "add    w2, w2, #1",
-            "add    w5, w5, #7",
-            "tbnz   w3, #7, 100b",      // if continuation bit set, continue
+            // Byte 1 (shift 7)
+            "cmp    w9, #2",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #1]",
+            "and    w4, w3, #0x7F",
+            "orr    w0, w0, w4, lsl #7",
+            "tbz    w3, #7, 210f",
 
-            // Sign extend if final byte has bit 6 set and shift < 32
-            "cmp    w5, #32",
-            "b.ge   200f",
-            "tbz    w3, #6, 200f",      // if sign bit clear, no extension needed
-            // Sign extend: result |= (~0 << shift)
-            "mvn    w4, wzr",           // w4 = -1
-            "lsl    w4, w4, w5",        // shift
-            "orr    w0, w0, w4",        // apply sign extension
+            // Byte 2 (shift 14)
+            "cmp    w9, #3",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #2]",
+            "and    w4, w3, #0x7F",
+            "orr    w0, w0, w4, lsl #14",
+            "tbz    w3, #7, 220f",
 
+            // Byte 3 (shift 21)
+            "cmp    w9, #4",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #3]",
+            "and    w4, w3, #0x7F",
+            "orr    w0, w0, w4, lsl #21",
+            "tbz    w3, #7, 230f",
+
+            // Byte 4 (shift 28) - final byte, only 4 bits valid
+            "cmp    w9, #5",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #4]",
+            "and    w4, w3, #0x0F",
+            "orr    w0, w0, w4, lsl #28",
+            "tbnz   w3, #7, 300f",        // error if continuation set
+            "mov    w2, #5",
+            "b      400f",                // no sign extension needed (all 32 bits filled)
+
+            // Exit points with sign extension check
+            // After byte 0 (shift 7): sign extend from bit 6
             "200:",
+            "mov    w2, #1",
+            "tbz    w3, #6, 400f",
+            "orr    w0, w0, #0xFFFFFF80",
+            "b      400f",
+
+            // After byte 1 (shift 14): sign extend from bit 13
+            "210:",
+            "mov    w2, #2",
+            "tbz    w3, #6, 400f",
+            "orr    w0, w0, #0xFFFFC000",
+            "b      400f",
+
+            // After byte 2 (shift 21): sign extend from bit 20
+            "220:",
+            "mov    w2, #3",
+            "tbz    w3, #6, 400f",
+            "orr    w0, w0, #0xFFE00000",
+            "b      400f",
+
+            // After byte 3 (shift 28): sign extend from bit 27
+            "230:",
+            "mov    w2, #4",
+            "tbz    w3, #6, 400f",
+            "orr    w0, w0, #0xF0000000",
+            "b      400f",
+
+            "300:",                       // error
+            "mov    w0, #0",
+            "mov    w2, #0",
+
+            "400:",                       // final exit
 
             in("x1") ptr,
+            in("x9") buf_len,
             lateout("w0") result,
             lateout("w2") consumed,
             out("w3") _,
             out("w4") _,
-            out("w5") _,
             options(readonly, nostack),
         );
     }
@@ -202,22 +259,23 @@ pub fn decode_ileb128_i32(buf: &[u8]) -> (i32, usize) {
 pub fn decode_ileb128_i32(buf: &[u8]) -> (i32, usize) {
     let mut result: i32 = 0;
     let mut shift = 0;
-    let mut i = 0;
-    let mut byte;
-    loop {
-        byte = buf[i];
+    let mut last_byte = 0u8;
+    for (i, &byte) in buf.iter().enumerate() {
+        if i >= 5 {
+            return (0, 0);
+        }
         result |= ((byte & 0x7f) as i32) << shift;
-        i += 1;
         shift += 7;
+        last_byte = byte;
         if byte & 0x80 == 0 {
-            break;
+            // Sign extend if necessary
+            if shift < 32 && (last_byte & 0x40) != 0 {
+                result |= !0 << shift;
+            }
+            return (result, i + 1);
         }
     }
-    // Sign extend if necessary
-    if shift < 32 && (byte & 0x40) != 0 {
-        result |= !0 << shift;
-    }
-    (result, i)
+    (0, 0)
 }
 
 /// Encode an i64 as ILEB128 (signed LEB128).
@@ -577,46 +635,178 @@ pub fn encode_ileb128_i64(mut value: i64, buf: &mut [u8; ILEB128_I64_BUF_SIZE]) 
 
 /// Decode an i64 from ILEB128.
 ///
-/// Returns (value, bytes_consumed).
+/// Returns (value, bytes_consumed). Returns (0, 0) for empty/invalid input.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn decode_ileb128_i64(buf: &[u8]) -> (i64, usize) {
+    let buf_len = buf.len();
+    if buf_len == 0 {
+        return (0, 0);
+    }
+
     let result: i64;
     let consumed: usize;
     let ptr = buf.as_ptr();
-    // SAFETY: Reads up to 10 bytes.
+    // SAFETY: We check bounds before each byte read.
     unsafe {
         core::arch::asm!(
-            "mov    x0, #0",            // result
-            "mov    w2, #0",            // byte index
-            "mov    w5, #0",            // shift amount
+            // Byte 0 (shift 0)
+            "cmp    w9, #1",
+            "b.lo   300f",
+            "ldrb   w3, [x1]",
+            "and    x0, x3, #0x7F",
+            "tbz    w3, #7, 200f",
 
-            "100:",  // loop
-            "ldrb   w3, [x1, w2, uxtw]",
-            "and    x4, x3, #0x7F",     // extract 7 bits
-            "lsl    x4, x4, x5",        // shift into position
-            "orr    x0, x0, x4",        // accumulate
-            "add    w2, w2, #1",
-            "add    w5, w5, #7",
-            "tbnz   w3, #7, 100b",      // if continuation bit set, continue
+            // Byte 1 (shift 7)
+            "cmp    w9, #2",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #1]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #7",
+            "tbz    w3, #7, 201f",
 
-            // Sign extend if final byte has bit 6 set and shift < 64
-            "cmp    w5, #64",
-            "b.ge   200f",
-            "tbz    w3, #6, 200f",      // if sign bit clear, no extension needed
-            // Sign extend: result |= (~0 << shift)
-            "mvn    x4, xzr",           // x4 = -1
-            "lsl    x4, x4, x5",        // shift
-            "orr    x0, x0, x4",        // apply sign extension
+            // Byte 2 (shift 14)
+            "cmp    w9, #3",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #2]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #14",
+            "tbz    w3, #7, 202f",
 
+            // Byte 3 (shift 21)
+            "cmp    w9, #4",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #3]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #21",
+            "tbz    w3, #7, 203f",
+
+            // Byte 4 (shift 28)
+            "cmp    w9, #5",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #4]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #28",
+            "tbz    w3, #7, 204f",
+
+            // Byte 5 (shift 35)
+            "cmp    w9, #6",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #5]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #35",
+            "tbz    w3, #7, 205f",
+
+            // Byte 6 (shift 42)
+            "cmp    w9, #7",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #6]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #42",
+            "tbz    w3, #7, 206f",
+
+            // Byte 7 (shift 49)
+            "cmp    w9, #8",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #7]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #49",
+            "tbz    w3, #7, 207f",
+
+            // Byte 8 (shift 56)
+            "cmp    w9, #9",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #8]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #56",
+            "tbz    w3, #7, 208f",
+
+            // Byte 9 (shift 63) - final byte, only 1 bit valid
+            "cmp    w9, #10",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #9]",
+            "and    x4, x3, #0x01",
+            "orr    x0, x0, x4, lsl #63",
+            "tbnz   w3, #7, 300f",        // error if continuation set
+            "mov    w2, #10",
+            "b      400f",                // no sign extension needed (all 64 bits filled)
+
+            // Exit points with sign extension check
+            // After byte 0 (shift 7): sign extend from bit 6
             "200:",
+            "mov    w2, #1",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFFFFFFFFFF80",
+            "b      400f",
+
+            // After byte 1 (shift 14)
+            "201:",
+            "mov    w2, #2",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFFFFFFFFC000",
+            "b      400f",
+
+            // After byte 2 (shift 21)
+            "202:",
+            "mov    w2, #3",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFFFFFFE00000",
+            "b      400f",
+
+            // After byte 3 (shift 28)
+            "203:",
+            "mov    w2, #4",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFFFFF0000000",
+            "b      400f",
+
+            // After byte 4 (shift 35)
+            "204:",
+            "mov    w2, #5",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFFF800000000",
+            "b      400f",
+
+            // After byte 5 (shift 42)
+            "205:",
+            "mov    w2, #6",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFC0000000000",
+            "b      400f",
+
+            // After byte 6 (shift 49)
+            "206:",
+            "mov    w2, #7",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFE000000000000",
+            "b      400f",
+
+            // After byte 7 (shift 56)
+            "207:",
+            "mov    w2, #8",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFF00000000000000",
+            "b      400f",
+
+            // After byte 8 (shift 63)
+            "208:",
+            "mov    w2, #9",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0x8000000000000000",
+            "b      400f",
+
+            "300:",                       // error
+            "mov    x0, #0",
+            "mov    w2, #0",
+
+            "400:",                       // final exit
 
             in("x1") ptr,
+            in("x9") buf_len,
             lateout("x0") result,
             lateout("w2") consumed,
             out("w3") _,
             out("x4") _,
-            out("w5") _,
             options(readonly, nostack),
         );
     }
@@ -629,22 +819,23 @@ pub fn decode_ileb128_i64(buf: &[u8]) -> (i64, usize) {
 pub fn decode_ileb128_i64(buf: &[u8]) -> (i64, usize) {
     let mut result: i64 = 0;
     let mut shift = 0;
-    let mut i = 0;
-    let mut byte;
-    loop {
-        byte = buf[i];
+    let mut last_byte = 0u8;
+    for (i, &byte) in buf.iter().enumerate() {
+        if i >= 10 {
+            return (0, 0);
+        }
         result |= ((byte & 0x7f) as i64) << shift;
-        i += 1;
         shift += 7;
+        last_byte = byte;
         if byte & 0x80 == 0 {
-            break;
+            // Sign extend if necessary
+            if shift < 64 && (last_byte & 0x40) != 0 {
+                result |= !0i64 << shift;
+            }
+            return (result, i + 1);
         }
     }
-    // Sign extend if necessary
-    if shift < 64 && (byte & 0x40) != 0 {
-        result |= !0i64 << shift;
-    }
-    (result, i)
+    (0, 0)
 }
 
 // i128 support (19 bytes max)
@@ -673,27 +864,344 @@ pub fn encode_ileb128_i128(mut value: i128, buf: &mut [u8; ILEB128_I128_BUF_SIZE
 
 /// Decode an i128 from ILEB128.
 ///
-/// Returns (value, bytes_consumed).
+/// Returns (value, bytes_consumed). Returns (0, 0) for empty/invalid input.
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+#[inline(always)]
+pub fn decode_ileb128_i128(buf: &[u8]) -> (i128, usize) {
+    let buf_len = buf.len();
+    if buf_len == 0 {
+        return (0, 0);
+    }
+
+    let result_lo: u64;
+    let result_hi: u64;
+    let consumed: usize;
+    let ptr = buf.as_ptr();
+    // SAFETY: We check bounds before each byte read.
+    unsafe {
+        core::arch::asm!(
+            "mov    x8, #0",              // result_hi (x0 set by first byte)
+
+            // Byte 0 (shift 0) - to low
+            "cmp    w9, #1",
+            "b.lo   300f",
+            "ldrb   w3, [x1]",
+            "and    x0, x3, #0x7F",
+            "tbz    w3, #7, 200f",
+
+            // Byte 1 (shift 7) - to low
+            "cmp    w9, #2",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #1]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #7",
+            "tbz    w3, #7, 201f",
+
+            // Byte 2 (shift 14) - to low
+            "cmp    w9, #3",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #2]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #14",
+            "tbz    w3, #7, 202f",
+
+            // Byte 3 (shift 21) - to low
+            "cmp    w9, #4",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #3]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #21",
+            "tbz    w3, #7, 203f",
+
+            // Byte 4 (shift 28) - to low
+            "cmp    w9, #5",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #4]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #28",
+            "tbz    w3, #7, 204f",
+
+            // Byte 5 (shift 35) - to low
+            "cmp    w9, #6",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #5]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #35",
+            "tbz    w3, #7, 205f",
+
+            // Byte 6 (shift 42) - to low
+            "cmp    w9, #7",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #6]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #42",
+            "tbz    w3, #7, 206f",
+
+            // Byte 7 (shift 49) - to low
+            "cmp    w9, #8",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #7]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #49",
+            "tbz    w3, #7, 207f",
+
+            // Byte 8 (shift 56) - to low
+            "cmp    w9, #9",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #8]",
+            "and    x4, x3, #0x7F",
+            "orr    x0, x0, x4, lsl #56",
+            "tbz    w3, #7, 208f",
+
+            // Byte 9 (shift 63) - spans boundary: 1 bit to low, 6 bits to high
+            "cmp    w9, #10",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #9]",
+            "and    x4, x3, #0x01",
+            "orr    x0, x0, x4, lsl #63",
+            "and    x4, x3, #0x7F",
+            "lsr    x4, x4, #1",
+            "orr    x8, x8, x4",
+            "tbz    w3, #7, 209f",
+
+            // Byte 10 (shift 70) - to high (shift 70-64=6)
+            "cmp    w9, #11",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #10]",
+            "and    x4, x3, #0x7F",
+            "orr    x8, x8, x4, lsl #6",
+            "tbz    w3, #7, 210f",
+
+            // Byte 11 (shift 77) - to high (shift 77-64=13)
+            "cmp    w9, #12",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #11]",
+            "and    x4, x3, #0x7F",
+            "orr    x8, x8, x4, lsl #13",
+            "tbz    w3, #7, 211f",
+
+            // Byte 12 (shift 84) - to high (shift 84-64=20)
+            "cmp    w9, #13",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #12]",
+            "and    x4, x3, #0x7F",
+            "orr    x8, x8, x4, lsl #20",
+            "tbz    w3, #7, 212f",
+
+            // Byte 13 (shift 91) - to high (shift 91-64=27)
+            "cmp    w9, #14",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #13]",
+            "and    x4, x3, #0x7F",
+            "orr    x8, x8, x4, lsl #27",
+            "tbz    w3, #7, 213f",
+
+            // Byte 14 (shift 98) - to high (shift 98-64=34)
+            "cmp    w9, #15",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #14]",
+            "and    x4, x3, #0x7F",
+            "orr    x8, x8, x4, lsl #34",
+            "tbz    w3, #7, 214f",
+
+            // Byte 15 (shift 105) - to high (shift 105-64=41)
+            "cmp    w9, #16",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #15]",
+            "and    x4, x3, #0x7F",
+            "orr    x8, x8, x4, lsl #41",
+            "tbz    w3, #7, 215f",
+
+            // Byte 16 (shift 112) - to high (shift 112-64=48)
+            "cmp    w9, #17",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #16]",
+            "and    x4, x3, #0x7F",
+            "orr    x8, x8, x4, lsl #48",
+            "tbz    w3, #7, 216f",
+
+            // Byte 17 (shift 119) - to high (shift 119-64=55)
+            "cmp    w9, #18",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #17]",
+            "and    x4, x3, #0x7F",
+            "orr    x8, x8, x4, lsl #55",
+            "tbz    w3, #7, 217f",
+
+            // Byte 18 (shift 126) - to high, only 2 bits valid (shift 126-64=62)
+            "cmp    w9, #19",
+            "b.lo   300f",
+            "ldrb   w3, [x1, #18]",
+            "and    x4, x3, #0x03",
+            "orr    x8, x8, x4, lsl #62",
+            "tbnz   w3, #7, 300f",        // error if continuation set
+            "mov    w2, #19",
+            "b      400f",                // no sign extension (all 128 bits filled)
+
+            // Exit points with sign extension
+            // Bytes 0-8: extend both low and high
+            "200:",
+            "mov    w2, #1",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFFFFFFFFFF80",
+            "mvn    x8, xzr",
+            "b      400f",
+
+            "201:",
+            "mov    w2, #2",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFFFFFFFFC000",
+            "mvn    x8, xzr",
+            "b      400f",
+
+            "202:",
+            "mov    w2, #3",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFFFFFFE00000",
+            "mvn    x8, xzr",
+            "b      400f",
+
+            "203:",
+            "mov    w2, #4",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFFFFF0000000",
+            "mvn    x8, xzr",
+            "b      400f",
+
+            "204:",
+            "mov    w2, #5",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFFF800000000",
+            "mvn    x8, xzr",
+            "b      400f",
+
+            "205:",
+            "mov    w2, #6",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFFFC0000000000",
+            "mvn    x8, xzr",
+            "b      400f",
+
+            "206:",
+            "mov    w2, #7",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFFFE000000000000",
+            "mvn    x8, xzr",
+            "b      400f",
+
+            "207:",
+            "mov    w2, #8",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0xFF00000000000000",
+            "mvn    x8, xzr",
+            "b      400f",
+
+            "208:",
+            "mov    w2, #9",
+            "tbz    w3, #6, 400f",
+            "orr    x0, x0, #0x8000000000000000",
+            "mvn    x8, xzr",
+            "b      400f",
+
+            // Bytes 9-17: extend high only
+            "209:",
+            "mov    w2, #10",
+            "tbz    w3, #6, 400f",
+            "orr    x8, x8, #0xFFFFFFFFFFFFFFC0",
+            "b      400f",
+
+            "210:",
+            "mov    w2, #11",
+            "tbz    w3, #6, 400f",
+            "orr    x8, x8, #0xFFFFFFFFFFFFE000",
+            "b      400f",
+
+            "211:",
+            "mov    w2, #12",
+            "tbz    w3, #6, 400f",
+            "orr    x8, x8, #0xFFFFFFFFFFF00000",
+            "b      400f",
+
+            "212:",
+            "mov    w2, #13",
+            "tbz    w3, #6, 400f",
+            "orr    x8, x8, #0xFFFFFFFFF8000000",
+            "b      400f",
+
+            "213:",
+            "mov    w2, #14",
+            "tbz    w3, #6, 400f",
+            "orr    x8, x8, #0xFFFFFFFC00000000",
+            "b      400f",
+
+            "214:",
+            "mov    w2, #15",
+            "tbz    w3, #6, 400f",
+            "orr    x8, x8, #0xFFFFFE0000000000",
+            "b      400f",
+
+            "215:",
+            "mov    w2, #16",
+            "tbz    w3, #6, 400f",
+            "orr    x8, x8, #0xFFFF000000000000",
+            "b      400f",
+
+            "216:",
+            "mov    w2, #17",
+            "tbz    w3, #6, 400f",
+            "orr    x8, x8, #0xFF80000000000000",
+            "b      400f",
+
+            "217:",
+            "mov    w2, #18",
+            "tbz    w3, #6, 400f",
+            "orr    x8, x8, #0xC000000000000000",
+            "b      400f",
+
+            "300:",                       // error
+            "mov    x0, #0",
+            "mov    x8, #0",
+            "mov    w2, #0",
+
+            "400:",                       // final exit
+
+            in("x1") ptr,
+            in("x9") buf_len,
+            lateout("x0") result_lo,
+            lateout("x8") result_hi,
+            lateout("w2") consumed,
+            out("w3") _,
+            out("x4") _,
+            options(readonly, nostack),
+        );
+    }
+    let value = ((result_hi as u128) << 64) | (result_lo as u128);
+    (value as i128, consumed)
+}
+
+/// Decode an i128 from ILEB128 (fallback).
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 #[inline(always)]
 pub fn decode_ileb128_i128(buf: &[u8]) -> (i128, usize) {
     let mut result: i128 = 0;
     let mut shift = 0;
-    let mut i = 0;
-    let mut byte;
-    loop {
-        byte = buf[i];
+    let mut last_byte = 0u8;
+    for (i, &byte) in buf.iter().enumerate() {
+        if i >= 19 {
+            return (0, 0);
+        }
         result |= ((byte & 0x7f) as i128) << shift;
-        i += 1;
         shift += 7;
+        last_byte = byte;
         if byte & 0x80 == 0 {
-            break;
+            // Sign extend if necessary
+            if shift < 128 && (last_byte & 0x40) != 0 {
+                result |= !0i128 << shift;
+            }
+            return (result, i + 1);
         }
     }
-    // Sign extend if necessary
-    if shift < 128 && (byte & 0x40) != 0 {
-        result |= !0i128 << shift;
-    }
-    (result, i)
+    (0, 0)
 }
 
 #[cfg(test)]

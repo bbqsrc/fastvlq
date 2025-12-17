@@ -77,11 +77,11 @@ pub use vi128::{
 };
 
 #[cfg(any(feature = "async-futures", feature = "async-tokio"))]
-pub use ext::{AsyncReadVlqExt, AsyncWriteVlqExt};
+pub use ext::{AsyncReadVintExt, AsyncWriteVintExt};
 
 #[cfg(feature = "std")]
 /// Extension trait for reading VLQ-encoded integers from a reader.
-pub trait ReadVlqExt {
+pub trait ReadVintExt {
     /// Read a variable-length `u32`.
     fn read_vu32(&mut self) -> IoResult<u32>;
     /// Read a variable-length `i32`.
@@ -98,7 +98,7 @@ pub trait ReadVlqExt {
 
 #[cfg(feature = "std")]
 /// Extension trait for writing VLQ-encoded integers to a writer.
-pub trait WriteVlqExt {
+pub trait WriteVintExt {
     /// Write a variable-length `u32`.
     fn write_vu32(&mut self, n: u32) -> IoResult<()>;
     /// Write a variable-length `i32`.
@@ -114,7 +114,7 @@ pub trait WriteVlqExt {
 }
 
 #[cfg(feature = "std")]
-impl<R: Read> ReadVlqExt for R {
+impl<R: Read> ReadVintExt for R {
     fn read_vu32(&mut self) -> IoResult<u32> {
         let mut buf = [0u8; vu32::VU32_BUF_SIZE];
         self.read_exact(&mut buf[0..1])?;
@@ -194,7 +194,7 @@ impl<R: Read> ReadVlqExt for R {
 }
 
 #[cfg(feature = "std")]
-impl<W: Write> WriteVlqExt for W {
+impl<W: Write> WriteVintExt for W {
     fn write_vu32(&mut self, n: u32) -> IoResult<()> {
         let v = encode_vu32(n);
         self.write_all(&v.bytes()[..v.len() as usize])

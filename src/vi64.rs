@@ -365,11 +365,14 @@ pub fn decode_vi64(n: Vi64) -> i64 {
 
 /// Decode a Vi64 from a byte slice.
 ///
-/// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
+/// Returns (value, bytes_consumed) on success, or (0, 0) if the slice is empty/invalid.
 #[inline(always)]
-pub fn decode_vi64_slice(data: &[u8]) -> Option<(i64, usize)> {
-    let (unsigned, len) = decode_vu64_slice(data)?;
-    Some((zigzag_decode_i64(unsigned), len))
+pub fn decode_vi64_slice(data: &[u8]) -> (i64, usize) {
+    let (unsigned, len) = decode_vu64_slice(data);
+    if len == 0 {
+        return (0, 0);
+    }
+    (zigzag_decode_i64(unsigned), len)
 }
 
 /// A signed 64-bit integer in value-length quantity encoding using zigzag.

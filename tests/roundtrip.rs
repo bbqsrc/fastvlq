@@ -150,6 +150,123 @@ fn vu128_round_trip_large() {
 }
 
 #[test]
+fn vu128_round_trip_offset10() {
+    // Test specifically offset!(10) which was failing in proptest
+    let val: u128 = 18519369050377699456;
+    let encoded = encode_vu128(val);
+    let bytes = encoded.bytes();
+    eprintln!("val = {val} = 0x{val:032x}");
+    eprintln!("encoded len = {}", encoded.len());
+    eprintln!("encoded bytes = {:02x?}", &bytes[..encoded.len() as usize]);
+    let decoded = decode_vu128(encoded);
+    eprintln!("decoded = {decoded} = 0x{decoded:032x}");
+
+    // Also test decode_slice directly
+    let slice_bytes: [u8; 18] = [
+        0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let (decoded_slice, len_slice) = decode_vu128_slice(&slice_bytes);
+    eprintln!("decode_slice result = {decoded_slice} = 0x{decoded_slice:032x}, len = {len_slice}");
+
+    assert_eq!(decoded, val, "offset10 roundtrip failed");
+}
+
+#[test]
+fn vu128_round_trip_offset12() {
+    // Test offset!(12) boundary
+    let val: u128 = 152314838441596435841152; // (8257 << 64) + offset9_lo = offset!(12)
+    let encoded = encode_vu128(val);
+    let bytes = encoded.bytes();
+    eprintln!("val = {val} = 0x{val:032x}");
+    eprintln!("encoded len = {}", encoded.len());
+    eprintln!("encoded bytes = {:02x?}", &bytes[..encoded.len() as usize]);
+    let decoded = decode_vu128(encoded);
+    eprintln!("decoded = {decoded} = 0x{decoded:032x}");
+
+    // Also test decode_slice directly
+    let (decoded_slice, len_slice) = decode_vu128_slice(&bytes);
+    eprintln!("decode_slice result = {decoded_slice} = 0x{decoded_slice:032x}, len = {len_slice}");
+
+    assert_eq!(decoded, val, "offset12 roundtrip failed");
+}
+
+#[test]
+fn vu128_round_trip_offset13() {
+    // Test offset!(13) boundary
+    let val: u128 = 19495127952275663231139968; // (0x10_2041 << 64) + offset9_lo = offset!(13)
+    let encoded = encode_vu128(val);
+    let bytes = encoded.bytes();
+    eprintln!("val = {val} = 0x{val:032x}");
+    eprintln!("encoded len = {}", encoded.len());
+    eprintln!("encoded bytes = {:02x?}", &bytes[..encoded.len() as usize]);
+    let decoded = decode_vu128(encoded);
+    eprintln!("decoded = {decoded} = 0x{decoded:032x}");
+
+    // Also test decode_slice directly
+    let (decoded_slice, len_slice) = decode_vu128_slice(&bytes);
+    eprintln!("decode_slice result = {decoded_slice} = 0x{decoded_slice:032x}, len = {len_slice}");
+
+    assert_eq!(decoded, val, "offset13 roundtrip failed");
+}
+
+#[test]
+fn vu128_round_trip_offset14() {
+    // Test offset!(14) boundary
+    let val: u128 = 2495375206523036213029388416; // offset!(14)
+    let encoded = encode_vu128(val);
+    let bytes = encoded.bytes();
+    eprintln!("val = {val} = 0x{val:032x}");
+    eprintln!("encoded len = {}", encoded.len());
+    eprintln!("encoded bytes = {:02x?}", &bytes[..encoded.len() as usize]);
+    let decoded = decode_vu128(encoded);
+    eprintln!("decoded = {decoded} = 0x{decoded:032x}");
+
+    // Also test decode_slice directly
+    let (decoded_slice, len_slice) = decode_vu128_slice(&bytes);
+    eprintln!("decode_slice result = {decoded_slice} = 0x{decoded_slice:032x}, len = {len_slice}");
+
+    assert_eq!(decoded, val, "offset14 roundtrip failed");
+}
+
+#[test]
+fn vu128_round_trip_offset15() {
+    // Test offset!(15) boundary
+    let val: u128 = 319408025263580386587205189760; // offset!(15)
+    let encoded = encode_vu128(val);
+    let bytes = encoded.bytes();
+    eprintln!("val = {val} = 0x{val:032x}");
+    eprintln!("encoded len = {}", encoded.len());
+    eprintln!("encoded bytes = {:02x?}", &bytes[..encoded.len() as usize]);
+    let decoded = decode_vu128(encoded);
+    eprintln!("decoded = {decoded} = 0x{decoded:032x}");
+
+    // Also test decode_slice directly
+    let (decoded_slice, len_slice) = decode_vu128_slice(&bytes);
+    eprintln!("decode_slice result = {decoded_slice} = 0x{decoded_slice:032x}, len = {len_slice}");
+
+    assert_eq!(decoded, val, "offset15 roundtrip failed");
+}
+
+#[test]
+fn vu128_round_trip_offset16() {
+    // Test offset!(16) boundary
+    let val: u128 = 40884227232566921234481707761792; // offset!(16)
+    let encoded = encode_vu128(val);
+    let bytes = encoded.bytes();
+    eprintln!("val = {val} = 0x{val:032x}");
+    eprintln!("encoded len = {}", encoded.len());
+    eprintln!("encoded bytes = {:02x?}", &bytes[..encoded.len() as usize]);
+    let decoded = decode_vu128(encoded);
+    eprintln!("decoded = {decoded} = 0x{decoded:032x}");
+
+    // Also test decode_slice directly
+    let (decoded_slice, len_slice) = decode_vu128_slice(&bytes);
+    eprintln!("decode_slice result = {decoded_slice} = 0x{decoded_slice:032x}, len = {len_slice}");
+
+    assert_eq!(decoded, val, "offset16 roundtrip failed");
+}
+
+#[test]
 fn vi128_round_trip() {
     assert_eq!(decode_vi128(encode_vi128(0)), 0);
     assert_eq!(decode_vi128(encode_vi128(1)), 1);
@@ -181,7 +298,7 @@ fn vu64_bytes_roundtrip() {
         let len = encoded.len() as usize;
 
         // Decode from slice should match original value
-        let (decoded, consumed) = decode_vu64_slice(&bytes).unwrap();
+        let (decoded, consumed) = decode_vu64_slice(&bytes);
         assert_eq!(
             decoded,
             val,
@@ -219,7 +336,7 @@ fn vu128_bytes_roundtrip() {
         let len = encoded.len() as usize;
 
         // Decode from slice should match original value
-        let (decoded, consumed) = decode_vu128_slice(&bytes).unwrap();
+        let (decoded, consumed) = decode_vu128_slice(&bytes);
         assert_eq!(
             decoded,
             val,

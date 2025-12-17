@@ -4,6 +4,39 @@ use core::fmt::{Debug, Display};
 
 pub(crate) const VU128_BUF_SIZE: usize = 18;
 
+// x86_64 offset constants for u128 ASM encoding
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF6: u64 = 0x0008_1020_4080;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF7: u64 = 0x0408_1020_4080;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF8: u64 = 0x0002_0408_1020_4080;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF9: u64 = 0x0102_0408_1020_4080;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF9_GAP: u64 = 0x8102_0408_1020_4080;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_MASK_56: u64 = 0x00FF_FFFF_FFFF_FFFF;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_MASK_40: u64 = 0xFF_FFFF_FFFF;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_MASK_48: u64 = 0xFFFF_FFFF_FFFF;
+// Extended format offset highs (for comparisons and sbb operations)
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF11_HI: u64 = 0x41;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF12_HI: u64 = 0x2041;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF13_HI: u64 = 0x10_2041;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF14_HI: u64 = 0x0810_2041;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF15_HI: u64 = 0x0004_0810_2041;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF16_HI: u64 = 0x0204_0810_2041;
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+const X86_OFF17_HI: u64 = 0x1_0204_0810_2041;
+
 /// Decode length from first two bytes for u128.
 ///
 /// For lengths 1-8: uses standard prefix scheme (same as u64).
@@ -335,52 +368,79 @@ fn encode_vu128_asm(n: u128) -> (u8, u8, u128) {
 
             "51:",
             // n_hi > 1 or (n_hi = 1 and n_lo >= offset!(9)): need 10+ byte encoding
-            // len=10: offset!(10) = offset!(9) + (1<<64), capacity 70 bits
-            // val_10_max = (1<<70) - 1
-            // n_max for len=10 = offset!(10) + (1<<70) - 1
-            // n_hi_max for len=10 = (offset!(10) + (1<<70) - 1) >> 64 = 1 + ((1<<70)-1)>>64 = 1 + (1<<6)-1 = 64
-            "cmp    x1, #64",
-            "b.lo   150f",
+            // Load offset_lo (same for all extended offsets) for boundary checks
+            "mov    x4, #0x4080",
+            "movk   x4, #0x1020, lsl #16",
+            "movk   x4, #0x0408, lsl #32",
+            "movk   x4, #0x0102, lsl #48",  // x4 = offset!(9)_lo = offset!(n)_lo for all n>=10
 
-            // len=11: capacity 77 bits from offset!(11)
-            "mov    x4, #0x2000",  // (1 << 77) >> 64 = 1 << 13 = 8192, but we compare cumulative
-            // offset!(11)_hi = offset!(10)_hi + (1<<70)>>64 = 1 + 64 = 65
-            // max_hi for len=11 = 65 + (1<<77-1)>>64 = 65 + 8191 = 8256
-            "mov    x7, #8256",
+            // For len=n, we need n < offset!(n+1)
+            // When n_hi == offset_hi, also need n_lo < offset_lo
+
+            // offset!(11)_hi = 0x41 = 65
+            "cmp    x1, #65",
+            "b.lo   150f",
+            "b.ne   60f",
+            "cmp    x0, x4",
+            "b.lo   150f",
+            "60:",
+
+            // offset!(12)_hi = 0x2041 = 8257
+            "mov    x7, #0x2041",
             "cmp    x1, x7",
             "b.lo   151f",
+            "b.ne   61f",
+            "cmp    x0, x4",
+            "b.lo   151f",
+            "61:",
 
-            // len=12: capacity 84 bits from offset!(12)
-            "mov    x7, #8256",
-            "movk   x7, #0x10, lsl #16",  // 8256 + (1<<20) = 8256 + 1048576
+            // offset!(13)_hi = 0x10_2041
+            "movk   x7, #0x10, lsl #16",
             "cmp    x1, x7",
             "b.lo   152f",
+            "b.ne   62f",
+            "cmp    x0, x4",
+            "b.lo   152f",
+            "62:",
 
-            // len=13: capacity 91 bits
-            "mov    x7, #0x80",
-            "movk   x7, #0x810, lsl #16",  // approximation for offset!(13)_hi + capacity
+            // offset!(14)_hi = 0x810_2041
+            "mov    x7, #0x2041",
+            "movk   x7, #0x810, lsl #16",
             "cmp    x1, x7",
             "b.lo   153f",
+            "b.ne   63f",
+            "cmp    x0, x4",
+            "b.lo   153f",
+            "63:",
 
-            // len=14: capacity 98 bits
-            "mov    x7, #0x4000",
-            "movk   x7, #0x4080, lsl #16",
+            // offset!(15)_hi = 0x4_0810_2041
+            "movk   x7, #0x4, lsl #32",
             "cmp    x1, x7",
             "b.lo   154f",
+            "b.ne   64f",
+            "cmp    x0, x4",
+            "b.lo   154f",
+            "64:",
 
-            // len=15: capacity 105 bits
-            "mov    x7, #0x4000",
-            "movk   x7, #0x4080, lsl #16",
-            "movk   x7, #0x20, lsl #32",
+            // offset!(16)_hi = 0x204_0810_2041
+            "mov    x7, #0x2041",
+            "movk   x7, #0x810, lsl #16",
+            "movk   x7, #0x204, lsl #32",
             "cmp    x1, x7",
             "b.lo   155f",
+            "b.ne   65f",
+            "cmp    x0, x4",
+            "b.lo   155f",
+            "65:",
 
-            // len=16: capacity 112 bits
-            "mov    x7, #0x4000",
-            "movk   x7, #0x4080, lsl #16",
-            "movk   x7, #0x1020, lsl #32",
+            // offset!(17)_hi = 0x1_0204_0810_2041
+            "movk   x7, #0x102, lsl #48",
             "cmp    x1, x7",
             "b.lo   156f",
+            "b.ne   66f",
+            "cmp    x0, x4",
+            "b.lo   156f",
+            "66:",
 
             // len=18: raw 128-bit
             "mov    x5, #0",
@@ -429,8 +489,7 @@ fn encode_vu128_asm(n: u128) -> (u8, u8, u128) {
             "movk   x4, #0x0408, lsl #32",
             "movk   x4, #0x0102, lsl #48",
             "subs   x2, x0, x4",
-            "mov    x7, #8256",
-            "movk   x7, #0x01, lsl #16",  // offset!(12)_hi
+            "mov    x7, #0x2041",  // offset!(12)_hi = 0x2041
             "sbc    x3, x1, x7",
             "mov    x5, #0",
             "lsr    x6, x3, #20",
@@ -446,8 +505,8 @@ fn encode_vu128_asm(n: u128) -> (u8, u8, u128) {
             "movk   x4, #0x0408, lsl #32",
             "movk   x4, #0x0102, lsl #48",
             "subs   x2, x0, x4",
-            "mov    x7, #0x4000",
-            "movk   x7, #0x0108, lsl #16",  // offset!(13)_hi approximation
+            "mov    x7, #0x2041",
+            "movk   x7, #0x10, lsl #16",  // offset!(13)_hi = 0x10_2041
             "sbc    x3, x1, x7",
             "mov    x5, #0",
             "lsr    x6, x3, #27",
@@ -463,8 +522,8 @@ fn encode_vu128_asm(n: u128) -> (u8, u8, u128) {
             "movk   x4, #0x0408, lsl #32",
             "movk   x4, #0x0102, lsl #48",
             "subs   x2, x0, x4",
-            "mov    x7, #0x4000",
-            "movk   x7, #0x8408, lsl #16",  // offset!(14)_hi approximation
+            "mov    x7, #0x2041",
+            "movk   x7, #0x810, lsl #16",  // offset!(14)_hi = 0x810_2041
             "sbc    x3, x1, x7",
             "mov    x5, #0",
             "mov    x7, #34",
@@ -481,9 +540,9 @@ fn encode_vu128_asm(n: u128) -> (u8, u8, u128) {
             "movk   x4, #0x0408, lsl #32",
             "movk   x4, #0x0102, lsl #48",
             "subs   x2, x0, x4",
-            "mov    x7, #0x4000",
-            "movk   x7, #0x4208, lsl #16",
-            "movk   x7, #0x04, lsl #32",  // offset!(15)_hi
+            "mov    x7, #0x2041",
+            "movk   x7, #0x810, lsl #16",
+            "movk   x7, #0x4, lsl #32",  // offset!(15)_hi = 0x4_0810_2041
             "sbc    x3, x1, x7",
             "mov    x5, #0",
             "mov    x7, #41",
@@ -500,9 +559,9 @@ fn encode_vu128_asm(n: u128) -> (u8, u8, u128) {
             "movk   x4, #0x0408, lsl #32",
             "movk   x4, #0x0102, lsl #48",
             "subs   x2, x0, x4",
-            "mov    x7, #0x4000",
-            "movk   x7, #0x2108, lsl #16",
-            "movk   x7, #0x0204, lsl #32",  // offset!(16)_hi
+            "mov    x7, #0x2041",
+            "movk   x7, #0x810, lsl #16",
+            "movk   x7, #0x204, lsl #32",  // offset!(16)_hi = 0x204_0810_2041
             "sbc    x3, x1, x7",
             "mov    x5, #0",
             "mov    x6, #0x01",  // prefix2 = 0x01
@@ -570,36 +629,29 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
             "cmp    {n_lo:r}, {tmp:r}",
             "jb     103f",
 
-            "movabs {tmp:r}, 0x0008_1020_4080",
-            "cmp    {n_lo:r}, {tmp:r}",
+            "cmp    {n_lo:r}, {off6:r}",
             "jb     104f",
 
-            "movabs {tmp:r}, 0x0408_1020_4080",
-            "cmp    {n_lo:r}, {tmp:r}",
+            "cmp    {n_lo:r}, {off7:r}",
             "jb     105f",
 
-            "movabs {tmp:r}, 0x0002_0408_1020_4080",
-            "cmp    {n_lo:r}, {tmp:r}",
+            "cmp    {n_lo:r}, {off8:r}",
             "jb     106f",
 
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
-            "cmp    {n_lo:r}, {tmp:r}",
+            "cmp    {n_lo:r}, {off9:r}",
             "jb     107f",
 
             // Check for 9-byte (second byte >= 0x80)
-            "movabs {tmp:r}, 0x8102_0408_1020_4080",
-            "cmp    {n_lo:r}, {tmp:r}",
+            "cmp    {n_lo:r}, {off9_gap:r}",
             "jb     110f",
 
             // len=9
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off9:r}",
             "xor    {p1:r}, {p1:r}",
             "mov    {p2:r}, {data_lo:r}",
             "shr    {p2:r}, 56",
-            "movabs {tmp:r}, 0x00FFFFFFFFFFFFFF",
-            "and    {data_lo:r}, {tmp:r}",
+            "and    {data_lo:r}, {mask56:r}",
             "xor    {data_hi:r}, {data_hi:r}",
             "jmp    200f",
 
@@ -664,55 +716,47 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
 
             // len=6
             "105:",
-            "movabs {tmp:r}, 0x0008_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off6:r}",
             "mov    {p1:r}, {data_lo:r}",
             "shr    {p1:r}, 40",
             "or     {p1:r}, 0x04",
             "xor    {p2:r}, {p2:r}",
-            "movabs {tmp:r}, 0xFFFFFFFFFF",
-            "and    {data_lo:r}, {tmp:r}",
+            "and    {data_lo:r}, {mask40:r}",
             "xor    {data_hi:r}, {data_hi:r}",
             "jmp    200f",
 
             // len=7
             "106:",
-            "movabs {tmp:r}, 0x0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off7:r}",
             "mov    {p1:r}, {data_lo:r}",
             "shr    {p1:r}, 48",
             "or     {p1:r}, 0x02",
             "xor    {p2:r}, {p2:r}",
-            "movabs {tmp:r}, 0xFFFFFFFFFFFF",
-            "and    {data_lo:r}, {tmp:r}",
+            "and    {data_lo:r}, {mask48:r}",
             "xor    {data_hi:r}, {data_hi:r}",
             "jmp    200f",
 
             // len=8
             "107:",
-            "movabs {tmp:r}, 0x0002_0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off8:r}",
             "mov    {p1:r}, 0x01",
             "xor    {p2:r}, {p2:r}",
-            "movabs {tmp:r}, 0xFFFFFFFFFFFFFF",
-            "and    {data_lo:r}, {tmp:r}",
+            "and    {data_lo:r}, {mask56:r}",
             "xor    {data_hi:r}, {data_hi:r}",
             "jmp    200f",
 
             // len=10 (gap case)
             "110:",
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off9:r}",
             "xor    {p1:r}, {p1:r}",
             "mov    {p2:r}, {data_lo:r}",
             "shr    {p2:r}, 56",
             "or     {p2:r}, 0x40",
-            "movabs {tmp:r}, 0x00FFFFFFFFFFFFFF",
-            "and    {data_lo:r}, {tmp:r}",
+            "and    {data_lo:r}, {mask56:r}",
             "xor    {data_hi:r}, {data_hi:r}",
             "jmp    200f",
 
@@ -723,54 +767,46 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
             "cmp    {n_hi:r}, 1",
             "ja     51f",  // n_hi > 1, definitely 10+ bytes
             // n_hi = 1, check if n_lo < offset!(9)
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
-            "cmp    {n_lo:r}, {tmp:r}",
+            "cmp    {n_lo:r}, {off9:r}",
             "jae    51f",  // n_lo >= offset!(9), use 10-byte
 
             // n_hi=1, n_lo < offset!(9): 9-byte encoding
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",  // val = n_lo - offset!(9) (wrapping gives 2^64 + n_lo - offset!(9))
+            "sub    {data_lo:r}, {off9:r}",  // val = n_lo - offset!(9) (wrapping gives 2^64 + n_lo - offset!(9))
             "xor    {p1:r}, {p1:r}",
             "mov    {p2:r}, {data_lo:r}",
             "shr    {p2:r}, 56",
-            "movabs {tmp:r}, 0x00FFFFFFFFFFFFFF",
-            "and    {data_lo:r}, {tmp:r}",
+            "and    {data_lo:r}, {mask56:r}",
             "xor    {data_hi:r}, {data_hi:r}",
             "jmp    200f",
 
             "51:",
-            // len=10
-            "cmp    {n_hi:r}, 64",
+            // len=10: threshold = offset!(11) high = 0x41
+            "cmp    {n_hi:r}, {off11_hi:r}",
             "jb     150f",
 
-            // len=11
-            "mov    {tmp:r}, 8256",
-            "cmp    {n_hi:r}, {tmp:r}",
+            // len=11: threshold = offset!(12) high = 0x2041
+            "cmp    {n_hi:r}, {off12_hi:r}",
             "jb     151f",
 
-            // len=12
-            "mov    {tmp:r}, 0x00108200",
-            "cmp    {n_hi:r}, {tmp:r}",
+            // len=12: threshold = offset!(13) high = 0x10_2041
+            "cmp    {n_hi:r}, {off13_hi:r}",
             "jb     152f",
 
-            // len=13
-            "mov    {tmp:r}, 0x08108200",
-            "cmp    {n_hi:r}, {tmp:r}",
+            // len=13: threshold = offset!(14) high = 0x0810_2041
+            "cmp    {n_hi:r}, {off14_hi:r}",
             "jb     153f",
 
-            // len=14
-            "movabs {tmp:r}, 0x0408_0810_8200",
-            "cmp    {n_hi:r}, {tmp:r}",
+            // len=14: threshold = offset!(15) high = 0x0004_0810_2041
+            "cmp    {n_hi:r}, {off15_hi:r}",
             "jb     154f",
 
-            // len=15
-            "movabs {tmp:r}, 0x0002_0408_0810_8200",
-            "cmp    {n_hi:r}, {tmp:r}",
+            // len=15: threshold = offset!(16) high = 0x0204_0810_2041
+            "cmp    {n_hi:r}, {off16_hi:r}",
             "jb     155f",
 
-            // len=16
-            "movabs {tmp:r}, 0x0102_0408_0810_8200",
-            "cmp    {n_hi:r}, {tmp:r}",
+            // len=16: threshold = offset!(17) high = 0x1_0204_0810_2041
+            "cmp    {n_hi:r}, {off17_hi:r}",
             "jb     156f",
 
             // len=18
@@ -782,9 +818,8 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
 
             // len=10
             "150:",
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off9:r}",
             "mov    {data_hi:r}, {n_hi:r}",
             "sbb    {data_hi:r}, 1",
             "xor    {p1:r}, {p1:r}",
@@ -796,12 +831,10 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
 
             // len=11
             "151:",
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off9:r}",
             "mov    {data_hi:r}, {n_hi:r}",
-            "mov    {tmp:r}, 65",
-            "sbb    {data_hi:r}, {tmp:r}",
+            "sbb    {data_hi:r}, {off11_hi:r}",
             "xor    {p1:r}, {p1:r}",
             "mov    {p2:r}, {data_hi:r}",
             "shr    {p2:r}, 13",
@@ -811,13 +844,10 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
 
             // len=12
             "152:",
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off9:r}",
             "mov    {data_hi:r}, {n_hi:r}",
-            "mov    {tmp:r}, 8256",
-            "add    {tmp:r}, 0x10000",
-            "sbb    {data_hi:r}, {tmp:r}",
+            "sbb    {data_hi:r}, {off12_hi:r}",
             "xor    {p1:r}, {p1:r}",
             "mov    {p2:r}, {data_hi:r}",
             "shr    {p2:r}, 20",
@@ -828,12 +858,10 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
 
             // len=13
             "153:",
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off9:r}",
             "mov    {data_hi:r}, {n_hi:r}",
-            "mov    {tmp:r}, 0x00108200",
-            "sbb    {data_hi:r}, {tmp:r}",
+            "sbb    {data_hi:r}, {off13_hi:r}",
             "xor    {p1:r}, {p1:r}",
             "mov    {p2:r}, {data_hi:r}",
             "shr    {p2:r}, 27",
@@ -844,12 +872,10 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
 
             // len=14
             "154:",
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off9:r}",
             "mov    {data_hi:r}, {n_hi:r}",
-            "mov    {tmp:r}, 0x08108200",
-            "sbb    {data_hi:r}, {tmp:r}",
+            "sbb    {data_hi:r}, {off14_hi:r}",
             "xor    {p1:r}, {p1:r}",
             "mov    {p2:r}, {data_hi:r}",
             "mov    ecx, 34",
@@ -859,14 +885,12 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
             "and    {data_hi:r}, {tmp:r}",
             "jmp    200f",
 
-            // len=15
+            // len=15: subtract offset!(15) high = 0x0004_0810_2041
             "155:",
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off9:r}",
             "mov    {data_hi:r}, {n_hi:r}",
-            "movabs {tmp:r}, 0x0408_0810_8200",
-            "sbb    {data_hi:r}, {tmp:r}",
+            "sbb    {data_hi:r}, {off15_hi:r}",
             "xor    {p1:r}, {p1:r}",
             "mov    {p2:r}, {data_hi:r}",
             "mov    ecx, 41",
@@ -876,14 +900,12 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
             "and    {data_hi:r}, {tmp:r}",
             "jmp    200f",
 
-            // len=16
+            // len=16: subtract offset!(16) high = 0x0204_0810_2041
             "156:",
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "mov    {data_lo:r}, {n_lo:r}",
-            "sub    {data_lo:r}, {tmp:r}",
+            "sub    {data_lo:r}, {off9:r}",
             "mov    {data_hi:r}, {n_hi:r}",
-            "movabs {tmp:r}, 0x0002_0408_0810_8200",
-            "sbb    {data_hi:r}, {tmp:r}",
+            "sbb    {data_hi:r}, {off16_hi:r}",
             "xor    {p1:r}, {p1:r}",
             "mov    {p2:r}, 0x01",
 
@@ -891,6 +913,20 @@ fn encode_vu128_asm_x86(n: u128) -> (u8, u8, u128) {
 
             n_lo = in(reg) n_lo,
             n_hi = in(reg) n_hi,
+            off6 = in(reg) X86_OFF6,
+            off7 = in(reg) X86_OFF7,
+            off8 = in(reg) X86_OFF8,
+            off9 = in(reg) X86_OFF9,
+            mask40 = in(reg) X86_MASK_40,
+            mask48 = in(reg) X86_MASK_48,
+            mask56 = in(reg) X86_MASK_56,
+            off11_hi = in(reg) X86_OFF11_HI,
+            off12_hi = in(reg) X86_OFF12_HI,
+            off13_hi = in(reg) X86_OFF13_HI,
+            off14_hi = in(reg) X86_OFF14_HI,
+            off15_hi = in(reg) X86_OFF15_HI,
+            off16_hi = in(reg) X86_OFF16_HI,
+            off17_hi = in(reg) X86_OFF17_HI,
             p1 = out(reg) prefix1,
             p2 = out(reg) prefix2,
             data_lo = out(reg) data_lo,
@@ -1018,9 +1054,10 @@ fn decode_vu128_asm(p1: u8, p2: u8, data: u128) -> u128 {
             "b.hs   11f",          // >= 0x80: len = 9
             "cbz    w4, 12f",      // == 0: len = 18
 
-            // 0x01-0x7F: len = 9 + leading_zeros(second)
+            // 0x01-0x7F: len = 9 + (clz - 24) = clz - 15
+            // clz(0x40) = 25 -> len=10, clz(0x20) = 26 -> len=11, etc.
             "clz    w7, w4",
-            "sub    w7, w7, #23",
+            "sub    w7, w7, #24",
             "add    w7, w7, #9",
             "b      20f",
 
@@ -1110,38 +1147,34 @@ fn decode_vu128_asm(p1: u8, p2: u8, data: u128) -> u128 {
             "and    x1, x6, #0x1FFF",
             "b      49f",
 
-            // len=12
+            // len=12: 20-bit data_hi, 4-bit prefix
             "and    x8, x4, #0x0F",
             "mov    x0, x5",
-            "mov    x9, #0xFFFFF",
-            "and    x1, x6, x9",
-            "b      60f",
+            "ubfx   x1, x6, #0, #20",
+            "b      70f",
 
-            // len=13
+            // len=13: 27-bit data_hi, 3-bit prefix
             "and    x8, x4, #0x07",
             "mov    x0, x5",
-            "mov    x9, #0x7FFFFFF",
-            "and    x1, x6, x9",
-            "b      61f",
+            "ubfx   x1, x6, #0, #27",
+            "b      71f",
 
-            // len=14
+            // len=14: 34-bit data_hi, 2-bit prefix
             "and    x8, x4, #0x03",
             "mov    x0, x5",
-            "mov    x9, #0x3FFFFFFFF",
-            "and    x1, x6, x9",
-            "b      62f",
+            "ubfx   x1, x6, #0, #34",
+            "b      72f",
 
-            // len=15
+            // len=15: 41-bit data_hi, 1-bit prefix
             "and    x8, x4, #0x01",
             "mov    x0, x5",
-            "mov    x9, #0x1FFFFFFFFFF",
-            "and    x1, x6, x9",
-            "b      63f",
+            "ubfx   x1, x6, #0, #41",
+            "b      73f",
 
             // len=16: val = data
             "mov    x0, x5",
             "mov    x1, x6",
-            "b      64f",
+            "b      74f",
             "nop",
 
             // Offset additions for lengths 2-16
@@ -1226,64 +1259,63 @@ fn decode_vu128_asm(p1: u8, p2: u8, data: u128) -> u128 {
             "adc    x1, x1, x8",
             "b      100f",
 
-            "60:",  // len=12: + offset!(12)
+            "70:",  // len=12: + offset!(12)
             "orr    x1, x1, x8, lsl #16",
             "mov    x9, #0x4080",
             "movk   x9, #0x1020, lsl #16",
             "movk   x9, #0x0408, lsl #32",
             "movk   x9, #0x0102, lsl #48",
             "adds   x0, x0, x9",
-            "mov    x8, #8256",
-            "movk   x8, #0x01, lsl #16",
+            "mov    x8, #0x2041",  // offset!(12)_hi = 0x2041
             "adc    x1, x1, x8",
             "b      100f",
 
-            "61:",  // len=13
+            "71:",  // len=13: + offset!(13)
             "orr    x1, x1, x8, lsl #24",
             "mov    x9, #0x4080",
             "movk   x9, #0x1020, lsl #16",
             "movk   x9, #0x0408, lsl #32",
             "movk   x9, #0x0102, lsl #48",
             "adds   x0, x0, x9",
-            "mov    x8, #0x4000",
-            "movk   x8, #0x0108, lsl #16",
+            "mov    x8, #0x2041",
+            "movk   x8, #0x10, lsl #16",  // offset!(13)_hi = 0x10_2041
             "adc    x1, x1, x8",
             "b      100f",
 
-            "62:",  // len=14
+            "72:",  // len=14: + offset!(14)
             "orr    x1, x1, x8, lsl #32",
             "mov    x9, #0x4080",
             "movk   x9, #0x1020, lsl #16",
             "movk   x9, #0x0408, lsl #32",
             "movk   x9, #0x0102, lsl #48",
             "adds   x0, x0, x9",
-            "mov    x8, #0x4000",
-            "movk   x8, #0x8408, lsl #16",
+            "mov    x8, #0x2041",
+            "movk   x8, #0x810, lsl #16",  // offset!(14)_hi = 0x810_2041
             "adc    x1, x1, x8",
             "b      100f",
 
-            "63:",  // len=15
+            "73:",  // len=15: + offset!(15)
             "orr    x1, x1, x8, lsl #40",
             "mov    x9, #0x4080",
             "movk   x9, #0x1020, lsl #16",
             "movk   x9, #0x0408, lsl #32",
             "movk   x9, #0x0102, lsl #48",
             "adds   x0, x0, x9",
-            "mov    x8, #0x4000",
-            "movk   x8, #0x4208, lsl #16",
-            "movk   x8, #0x04, lsl #32",
+            "mov    x8, #0x2041",
+            "movk   x8, #0x810, lsl #16",
+            "movk   x8, #0x4, lsl #32",  // offset!(15)_hi = 0x4_0810_2041
             "adc    x1, x1, x8",
             "b      100f",
 
-            "64:",  // len=16
+            "74:",  // len=16: + offset!(16)
             "mov    x9, #0x4080",
             "movk   x9, #0x1020, lsl #16",
             "movk   x9, #0x0408, lsl #32",
             "movk   x9, #0x0102, lsl #48",
             "adds   x0, x0, x9",
-            "mov    x8, #0x4000",
-            "movk   x8, #0x2108, lsl #16",
-            "movk   x8, #0x0204, lsl #32",
+            "mov    x8, #0x2041",
+            "movk   x8, #0x810, lsl #16",
+            "movk   x8, #0x204, lsl #32",  // offset!(16)_hi = 0x204_0810_2041
             "adc    x1, x1, x8",
 
             "100:",
@@ -1565,7 +1597,7 @@ fn decode_vu128_asm_x86(p1: u8, p2: u8, data: u128) -> u128 {
             "or     {r_hi:r}, {tmp:r}",
             "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "add    {r_lo:r}, {tmp:r}",
-            "mov    {tmp:r}, 0x00018200",
+            "mov    {tmp:r}, 0x2041",
             "adc    {r_hi:r}, {tmp:r}",
             "jmp    100f",
 
@@ -1574,7 +1606,7 @@ fn decode_vu128_asm_x86(p1: u8, p2: u8, data: u128) -> u128 {
             "or     {r_hi:r}, {tmp:r}",
             "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "add    {r_lo:r}, {tmp:r}",
-            "mov    {tmp:r}, 0x01084000",
+            "mov    {tmp:r}, 0x10_2041",
             "adc    {r_hi:r}, {tmp:r}",
             "jmp    100f",
 
@@ -1583,7 +1615,7 @@ fn decode_vu128_asm_x86(p1: u8, p2: u8, data: u128) -> u128 {
             "or     {r_hi:r}, {tmp:r}",
             "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "add    {r_lo:r}, {tmp:r}",
-            "mov    {tmp:r}, 0x84084000",
+            "mov    {tmp:r}, 0x0810_2041",
             "adc    {r_hi:r}, {tmp:r}",
             "jmp    100f",
 
@@ -1592,14 +1624,14 @@ fn decode_vu128_asm_x86(p1: u8, p2: u8, data: u128) -> u128 {
             "or     {r_hi:r}, {tmp:r}",
             "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "add    {r_lo:r}, {tmp:r}",
-            "movabs {tmp:r}, 0x0004_4208_4000",
+            "movabs {tmp:r}, 0x0004_0810_2041",
             "adc    {r_hi:r}, {tmp:r}",
             "jmp    100f",
 
             "4Ef:",  // len=16
             "movabs {tmp:r}, 0x0102_0408_1020_4080",
             "add    {r_lo:r}, {tmp:r}",
-            "movabs {tmp:r}, 0x0204_2108_4000",
+            "movabs {tmp:r}, 0x0204_0810_2041",
             "adc    {r_hi:r}, {tmp:r}",
 
             "100:",
@@ -1664,29 +1696,8 @@ pub const fn decode_vu128(n: Vu128) -> u128 {
     }
 }
 
-// Lookup tables for branchless decode (len 1-8, single prefix byte)
-const PREFIX_MASKS_128: [u8; 9] = [0, 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00];
-const OFFSETS_128: [u128; 9] = [
-    0,
-    0,               // len=1
-    128,             // len=2
-    16512,           // len=3
-    2113664,         // len=4
-    270549120,       // len=5
-    34630287488,     // len=6
-    4432676798592,   // len=7
-    567382630219904, // len=8
-];
-
-// Extended format tables (len 9-18, two prefix bytes)
-const PREFIX_MASKS_128_EXT: [u8; 19] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, // unused 0-8
-    0xFF, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00, 0x00, 0x00, // len 9-18
-];
-const PREFIX_SHIFTS_128_EXT: [u8; 19] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, // unused 0-8
-    56, 64, 72, 80, 88, 96, 104, 0, 0, 0, // len 9-18
-];
+// Extended format offset table (len 9-18, two prefix bytes)
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
 const OFFSETS_128_EXT: [u128; 19] = [
     0,
     0,
@@ -1727,101 +1738,532 @@ const OFFSETS_128_EXT: [u128; 19] = [
     0,
 ];
 
-/// Decode a u128 from a byte slice.
+/// Decode a u128 from a byte slice using CLZ dispatch aarch64 assembly.
 ///
-/// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
+/// Returns (value, bytes_consumed). Returns (0, 0) for empty/invalid input.
+#[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
-pub fn decode_vu128_slice(data: &[u8]) -> Option<(u128, usize)> {
-    let p1 = *data.first()?;
+pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
+    let data_len = data.len();
 
-    if p1 != 0 {
-        // Standard format (len 1-8) - single prefix byte
-        let len = (p1.leading_zeros() + 1) as usize;
-        if data.len() < len {
-            return None;
-        }
-
-        let raw = match len {
-            1 => 0u128,
-            2 => u128::from_le_bytes([data[1], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-            3 => u128::from_le_bytes([data[1], data[2], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-            4 => u128::from_le_bytes([
-                data[1], data[2], data[3], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            ]),
-            5 => u128::from_le_bytes([
-                data[1], data[2], data[3], data[4], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            ]),
-            6 => u128::from_le_bytes([
-                data[1], data[2], data[3], data[4], data[5], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            ]),
-            7 => u128::from_le_bytes([
-                data[1], data[2], data[3], data[4], data[5], data[6], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            ]),
-            _ => u128::from_le_bytes([
-                data[1], data[2], data[3], data[4], data[5], data[6], data[7], 0, 0, 0, 0, 0, 0, 0,
-                0, 0,
-            ]),
-        };
-
-        let shift = (len - 1) << 3;
-        let prefix_bits = ((p1 & PREFIX_MASKS_128[len]) as u128) << shift;
-        Some(((prefix_bits | raw) + OFFSETS_128[len], len))
-    } else {
-        // Extended format (len 9+) - two prefix bytes
-        let p2 = *data.get(1)?;
-        let len = decode_len_vu128(p1, p2) as usize;
-        if data.len() < len {
-            return None;
-        }
-
-        // len 9-18: data bytes are data[2..len], so len-2 data bytes
-        let raw = match len {
-            9 => u128::from_le_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], 0, 0, 0, 0, 0, 0, 0,
-                0, 0,
-            ]),
-            10 => u128::from_le_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], 0, 0, 0, 0,
-                0, 0, 0, 0,
-            ]),
-            11 => u128::from_le_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-                0, 0, 0, 0, 0, 0, 0,
-            ]),
-            12 => u128::from_le_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-                data[11], 0, 0, 0, 0, 0, 0,
-            ]),
-            13 => u128::from_le_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-                data[11], data[12], 0, 0, 0, 0, 0,
-            ]),
-            14 => u128::from_le_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-                data[11], data[12], data[13], 0, 0, 0, 0,
-            ]),
-            15 => u128::from_le_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-                data[11], data[12], data[13], data[14], 0, 0, 0,
-            ]),
-            16 => u128::from_le_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-                data[11], data[12], data[13], data[14], data[15], 0, 0,
-            ]),
-            17 => u128::from_le_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-                data[11], data[12], data[13], data[14], data[15], data[16], 0,
-            ]),
-            _ => u128::from_le_bytes([
-                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-                data[11], data[12], data[13], data[14], data[15], data[16], data[17],
-            ]),
-        };
-
-        let shift = PREFIX_SHIFTS_128_EXT[len] as u32;
-        let prefix_bits = ((p2 & PREFIX_MASKS_128_EXT[len]) as u128) << shift;
-        Some(((prefix_bits | raw) + OFFSETS_128_EXT[len], len))
+    if data_len == 0 {
+        return (0, 0);
     }
+
+    let value_lo: u64;
+    let value_hi: u64;
+    let len: usize;
+
+    // Preload all offset constants
+    const OFFSET2: u64 = 0x80;
+    const OFFSET3: u64 = 0x4080;
+    const OFFSET4: u64 = 0x20_4080;
+    const OFFSET5: u64 = 0x1020_4080;
+    const OFFSET6: u64 = 0x0008_1020_4080;
+    const OFFSET7: u64 = 0x0408_1020_4080;
+    const OFFSET8: u64 = 0x0002_0408_1020_4080;
+    const OFFSET9: u64 = 0x0102_0408_1020_4080;
+    // High parts for extended format (len 10-16)
+    const OFFSET10_HI: u64 = 1;
+    const OFFSET11_HI: u64 = 0x41;
+    const OFFSET12_HI: u64 = 0x2041;
+    const OFFSET13_HI: u64 = 0x10_2041;
+    const OFFSET14_HI: u64 = 0x0810_2041;
+    const OFFSET15_HI: u64 = 0x0004_0810_2041;
+    const OFFSET16_HI: u64 = 0x0204_0810_2041;
+
+    // SAFETY: We've verified data is not empty. Bounds checked after decode.
+    unsafe {
+        core::arch::asm!(
+            // Load prefix byte
+            "ldrb   w3, [{ptr}]",
+
+            // Check if extended format (p1 == 0)
+            "cbz    w3, 200f",
+
+            // Standard format: CLZ dispatch for len 1-8
+            "clz    w4, w3",
+            "sub    w4, w4, #24",              // len=1->0, ..., len=8->7
+
+            // Computed branch: each handler is 32 bytes (8 instructions)
+            "adr    x10, 1f",
+            "add    x10, x10, x4, lsl #5",
+            "br     x10",
+
+            // len=1 handler
+            ".p2align 5",
+            "1:",
+            "and    {out_lo}, x3, #0x7F",
+            "mov    {out_hi}, #0",
+            "mov    {len:w}, #1",
+            "b      100f",
+            "nop", "nop", "nop", "nop",
+
+            // len=2: offset=128 (preloaded)
+            "ldrb   w5, [{ptr}, #1]",
+            "add    x5, x5, {off2}",
+            "and    x6, x3, #0x3F",
+            "add    {out_lo}, x5, x6, lsl #8",
+            "mov    {out_hi}, #0",
+            "mov    {len:w}, #2",
+            "b      100f",
+            "nop",
+
+            // len=3: offset=0x4080 (preloaded)
+            "ldrh   w5, [{ptr}, #1]",
+            "add    x5, x5, {off3}",
+            "and    x6, x3, #0x1F",
+            "add    {out_lo}, x5, x6, lsl #16",
+            "mov    {out_hi}, #0",
+            "mov    {len:w}, #3",
+            "b      100f",
+            "nop",
+
+            // len=4: offset=0x204080 (preloaded)
+            "ldr    w5, [{ptr}, #1]",
+            "ubfx   x5, x5, #0, #24",
+            "add    x5, x5, {off4}",
+            "and    x6, x3, #0x0F",
+            "add    {out_lo}, x5, x6, lsl #24",
+            "mov    {out_hi}, #0",
+            "mov    {len:w}, #4",
+            "b      100f",
+
+            // len=5: offset=0x10204080 (preloaded)
+            "ldr    w5, [{ptr}, #1]",
+            "add    x5, x5, {off5}",
+            "and    x6, x3, #0x07",
+            "add    {out_lo}, x5, x6, lsl #32",
+            "mov    {out_hi}, #0",
+            "mov    {len:w}, #5",
+            "b      100f",
+            "nop",
+
+            // len=6: offset=0x0008_1020_4080 (preloaded)
+            "ldr    x5, [{ptr}, #1]",
+            "ubfx   x5, x5, #0, #40",
+            "add    x5, x5, {off6}",
+            "and    x6, x3, #0x03",
+            "add    {out_lo}, x5, x6, lsl #40",
+            "mov    {out_hi}, #0",
+            "mov    {len:w}, #6",
+            "b      100f",
+
+            // len=7: offset=0x0408_1020_4080 (preloaded)
+            "ldr    x5, [{ptr}, #1]",
+            "ubfx   x5, x5, #0, #48",
+            "add    x5, x5, {off7}",
+            "and    x6, x3, #0x01",
+            "add    {out_lo}, x5, x6, lsl #48",
+            "mov    {out_hi}, #0",
+            "mov    {len:w}, #7",
+            "b      100f",
+
+            // len=8: offset=0x0002_0408_1020_4080 (preloaded)
+            "ldr    x5, [{ptr}, #1]",
+            "ubfx   {out_lo}, x5, #0, #56",
+            "add    {out_lo}, {out_lo}, {off8}",
+            "mov    {out_hi}, #0",
+            "mov    {len:w}, #8",
+            "b      100f",
+            "nop", "nop",
+
+            // Extended format: p1 == 0
+            "200:",
+            "ldrb   w4, [{ptr}, #1]",          // Load second prefix byte
+
+            // Check for len=9 (p2 >= 0x80)
+            "cmp    w4, #0x80",
+            "b.hs   209f",
+
+            // Check for len=18 (p2 == 0)
+            "cbz    w4, 218f",
+
+            // Extended len 10-17: CLZ on p2 gives len = 9 + clz(p2) - 24
+            // clz(p2) for p2 in [0x40,0x7F] = 25 -> len=10
+            // clz(p2) for p2 in [0x20,0x3F] = 26 -> len=11
+            // ...
+            // clz(p2) for p2 in [0x01,0x01] = 31 -> len=16 (but 0x01 gives len=17)
+            "clz    w5, w4",
+            "sub    w5, w5, #25",              // 0 for len=10, 1 for len=11, etc.
+
+            // Computed branch for len 10-17
+            "adr    x10, 210f",
+            "add    x10, x10, x5, lsl #5",
+            "br     x10",
+
+            // len=10: 8 data bytes at [ptr+2], p2 mask 0x3F (NEON 128-bit load)
+            ".p2align 5",
+            "210:",
+            "ldr    q0, [{ptr}, #2]",
+            "mov    {out_lo}, v0.d[0]",
+            "and    x6, x4, #0x3F",
+            "mov    {out_hi}, x6",
+            "adds   {out_lo}, {out_lo}, {off9}",
+            "adc    {out_hi}, {out_hi}, {off10_hi}",
+            "mov    {len:w}, #10",
+            "b      100f",
+
+            // len=11: 9 data bytes, p2 mask 0x1F (NEON 128-bit load)
+            "ldr    q0, [{ptr}, #2]",
+            "mov    {out_lo}, v0.d[0]",
+            "mov    x5, v0.d[1]",
+            "and    x5, x5, #0xFF",
+            "and    x6, x4, #0x1F",
+            "orr    {out_hi}, x5, x6, lsl #8",
+            "adds   {out_lo}, {out_lo}, {off9}",
+            "b      311f",
+
+            // len=12: 10 data bytes, p2 mask 0x0F (NEON 128-bit load)
+            "ldr    q0, [{ptr}, #2]",
+            "mov    {out_lo}, v0.d[0]",
+            "mov    x5, v0.d[1]",
+            "and    x5, x5, #0xFFFF",
+            "and    x6, x4, #0x0F",
+            "orr    {out_hi}, x5, x6, lsl #16",
+            "adds   {out_lo}, {out_lo}, {off9}",
+            "b      312f",
+
+            // len=13: 11 data bytes, p2 mask 0x07 (NEON 128-bit load)
+            "ldr    q0, [{ptr}, #2]",
+            "mov    {out_lo}, v0.d[0]",
+            "mov    x5, v0.d[1]",
+            "ubfx   x5, x5, #0, #24",
+            "and    x6, x4, #0x07",
+            "orr    {out_hi}, x5, x6, lsl #24",
+            "adds   {out_lo}, {out_lo}, {off9}",
+            "b      313f",  // need overflow for adc + mov {len:w}
+
+            // len=14: 12 data bytes, p2 mask 0x03 (NEON 128-bit load)
+            "ldr    q0, [{ptr}, #2]",
+            "mov    {out_lo}, v0.d[0]",
+            "mov    x5, v0.d[1]",
+            "ubfx   x5, x5, #0, #32",
+            "and    x6, x4, #0x03",
+            "orr    {out_hi}, x5, x6, lsl #32",
+            "adds   {out_lo}, {out_lo}, {off9}",
+            "b      314f",  // need overflow for adc + mov {len:w}
+
+            // len=15: 13 data bytes, p2 mask 0x01 (NEON 128-bit load)
+            "ldr    q0, [{ptr}, #2]",
+            "mov    {out_lo}, v0.d[0]",
+            "mov    x5, v0.d[1]",
+            "ubfx   x5, x5, #0, #40",
+            "and    x6, x4, #0x01",
+            "orr    {out_hi}, x5, x6, lsl #40",
+            "adds   {out_lo}, {out_lo}, {off9}",
+            "b      315f",  // need overflow for adc + mov {len:w}
+
+            // len=16: 14 data bytes (NEON 128-bit load)
+            "ldr    q0, [{ptr}, #2]",
+            "mov    {out_lo}, v0.d[0]",
+            "mov    x5, v0.d[1]",
+            "ubfx   {out_hi}, x5, #0, #48",
+            "adds   {out_lo}, {out_lo}, {off9}",
+            "adc    {out_hi}, {out_hi}, {off16_hi}",
+            "mov    {len:w}, #16",
+            "b      100f",
+
+            // len=17: 15 data bytes (NEON 128-bit load)
+            "ldr    q0, [{ptr}, #2]",
+            "mov    {out_lo}, v0.d[0]",
+            "mov    x5, v0.d[1]",
+            "ubfx   {out_hi}, x5, #0, #56",
+            "mov    {len:w}, #17",
+            "b      100f",
+            "nop", "nop",
+
+            // len=9: p2 >= 0x80, 7 data bytes at [ptr+2] (preloaded)
+            "209:",
+            "ldr    x5, [{ptr}, #2]",
+            "ubfx   {out_lo}, x5, #0, #56",
+            "orr    {out_lo}, {out_lo}, x4, lsl #56",
+            "adds   {out_lo}, {out_lo}, {off9}",
+            "adc    {out_hi}, xzr, xzr",
+            "mov    {len:w}, #9",
+            "b      100f",
+
+            // len=18: raw 128-bit, 16 data bytes at [ptr+2] (NEON 128-bit load)
+            "218:",
+            "ldr    q0, [{ptr}, #2]",
+            "mov    {out_lo}, v0.d[0]",
+            "mov    {out_hi}, v0.d[1]",
+            "mov    {len:w}, #18",
+            "b      100f",
+
+            // Overflow handlers for lengths that need adc + mov {len:w}
+            "311:",  // len=11
+            "adc    {out_hi}, {out_hi}, {off11_hi}",
+            "mov    {len:w}, #11",
+            "b      100f",
+            "312:",  // len=12
+            "adc    {out_hi}, {out_hi}, {off12_hi}",
+            "mov    {len:w}, #12",
+            "b      100f",
+            "313:",  // len=13
+            "adc    {out_hi}, {out_hi}, {off13_hi}",
+            "mov    {len:w}, #13",
+            "b      100f",
+            "314:",  // len=14
+            "adc    {out_hi}, {out_hi}, {off14_hi}",
+            "mov    {len:w}, #14",
+            "b      100f",
+            "315:",  // len=15
+            "adc    {out_hi}, {out_hi}, {off15_hi}",
+            "mov    {len:w}, #15",
+
+            "100:",
+
+            ptr = in(reg) data.as_ptr(),
+            off2 = in(reg) OFFSET2,
+            off3 = in(reg) OFFSET3,
+            off4 = in(reg) OFFSET4,
+            off5 = in(reg) OFFSET5,
+            off6 = in(reg) OFFSET6,
+            off7 = in(reg) OFFSET7,
+            off8 = in(reg) OFFSET8,
+            off9 = in(reg) OFFSET9,
+            off10_hi = in(reg) OFFSET10_HI,
+            off11_hi = in(reg) OFFSET11_HI,
+            off12_hi = in(reg) OFFSET12_HI,
+            off13_hi = in(reg) OFFSET13_HI,
+            off14_hi = in(reg) OFFSET14_HI,
+            off15_hi = in(reg) OFFSET15_HI,
+            off16_hi = in(reg) OFFSET16_HI,
+            out_lo = out(reg) value_lo,
+            out_hi = out(reg) value_hi,
+            len = out(reg) len,
+            out("w3") _, out("w4") _, out("w5") _,
+            out("x6") _, out("x7") _,
+            out("x10") _,
+            out("v0") _,
+            options(pure, readonly, nostack),
+        );
+    }
+
+    // Bounds check after decode
+    if len > data_len {
+        return (0, 0);
+    }
+
+    (((value_hi as u128) << 64) | (value_lo as u128), len)
+}
+
+/// Decode a u128 from a byte slice (fallback for non-aarch64 or no asm feature).
+///
+/// Returns (value, bytes_consumed). Returns (0, 0) for empty/invalid input.
+#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
+#[inline(always)]
+pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
+    let Some(&p1) = data.first() else {
+        return (0, 0);
+    };
+
+    // Standard format (len 1-8): single prefix byte, p1 != 0
+
+    // len=1: p1 >= 0x80 (1xxx_xxxx)
+    if p1 >= 0x80 {
+        return ((p1 & 0x7F) as u128, 1);
+    }
+
+    // len=2: p1 >= 0x40 (01xx_xxxx)
+    if p1 >= 0x40 {
+        if data.len() < 2 {
+            return (0, 0);
+        }
+        let raw = data[1] as u128;
+        return (((((p1 & 0x3F) as u128) << 8) | raw).wrapping_add(128), 2);
+    }
+
+    // len=3: p1 >= 0x20 (001x_xxxx)
+    if p1 >= 0x20 {
+        if data.len() < 3 {
+            return (0, 0);
+        }
+        let raw = u16::from_le_bytes([data[1], data[2]]) as u128;
+        return (((((p1 & 0x1F) as u128) << 16) | raw).wrapping_add(16512), 3);
+    }
+
+    // len=4: p1 >= 0x10 (0001_xxxx)
+    if p1 >= 0x10 {
+        if data.len() < 4 {
+            return (0, 0);
+        }
+        let raw = u32::from_le_bytes([data[1], data[2], data[3], 0]) as u128 & 0xFF_FFFF;
+        return (
+            ((((p1 & 0x0F) as u128) << 24) | raw).wrapping_add(2113664),
+            4,
+        );
+    }
+
+    // len=5: p1 >= 0x08 (0000_1xxx)
+    if p1 >= 0x08 {
+        if data.len() < 5 {
+            return (0, 0);
+        }
+        let raw = u32::from_le_bytes([data[1], data[2], data[3], data[4]]) as u128;
+        return (
+            ((((p1 & 0x07) as u128) << 32) | raw).wrapping_add(270549120),
+            5,
+        );
+    }
+
+    // len=6: p1 >= 0x04 (0000_01xx)
+    if p1 >= 0x04 {
+        if data.len() < 6 {
+            return (0, 0);
+        }
+        let raw = u64::from_le_bytes([data[1], data[2], data[3], data[4], data[5], 0, 0, 0])
+            as u128
+            & 0xFF_FFFF_FFFF;
+        return (
+            ((((p1 & 0x03) as u128) << 40) | raw).wrapping_add(34630287488),
+            6,
+        );
+    }
+
+    // len=7: p1 >= 0x02 (0000_001x)
+    if p1 >= 0x02 {
+        if data.len() < 7 {
+            return (0, 0);
+        }
+        let raw = u64::from_le_bytes([data[1], data[2], data[3], data[4], data[5], data[6], 0, 0])
+            as u128
+            & 0xFFFF_FFFF_FFFF;
+        return (
+            ((((p1 & 0x01) as u128) << 48) | raw).wrapping_add(4432676798592),
+            7,
+        );
+    }
+
+    // len=8: p1 == 0x01 (0000_0001)
+    if p1 == 0x01 {
+        if data.len() < 8 {
+            return (0, 0);
+        }
+        let raw = u64::from_le_bytes([
+            data[1], data[2], data[3], data[4], data[5], data[6], data[7], 0,
+        ]) as u128
+            & 0xFF_FFFF_FFFF_FFFF;
+        return (raw.wrapping_add(567382630219904), 8);
+    }
+
+    // Extended format (len 9+): p1 == 0x00, two prefix bytes
+    let Some(&p2) = data.get(1) else {
+        return (0, 0);
+    };
+
+    // len=9: p2 >= 0x80 (1xxx_xxxx)
+    if p2 >= 0x80 {
+        if data.len() < 9 {
+            return (0, 0);
+        }
+        let raw = u64::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], 0,
+        ]) as u128
+            & 0xFF_FFFF_FFFF_FFFF;
+        let prefix_bits = (p2 as u128) << 56;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[9]), 9);
+    }
+
+    // len=10: p2 >= 0x40 (01xx_xxxx)
+    if p2 >= 0x40 {
+        if data.len() < 10 {
+            return (0, 0);
+        }
+        let raw = u64::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
+        ]) as u128;
+        let prefix_bits = ((p2 & 0x3F) as u128) << 64;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[10]), 10);
+    }
+
+    // len=11: p2 >= 0x20 (001x_xxxx)
+    if p2 >= 0x20 {
+        if data.len() < 11 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10], 0, 0,
+            0, 0, 0, 0, 0,
+        ]) & ((1u128 << 72) - 1);
+        let prefix_bits = ((p2 & 0x1F) as u128) << 72;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[11]), 11);
+    }
+
+    // len=12: p2 >= 0x10 (0001_xxxx)
+    if p2 >= 0x10 {
+        if data.len() < 12 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+            data[11], 0, 0, 0, 0, 0, 0,
+        ]) & ((1u128 << 80) - 1);
+        let prefix_bits = ((p2 & 0x0F) as u128) << 80;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[12]), 12);
+    }
+
+    // len=13: p2 >= 0x08 (0000_1xxx)
+    if p2 >= 0x08 {
+        if data.len() < 13 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+            data[11], data[12], 0, 0, 0, 0, 0,
+        ]) & ((1u128 << 88) - 1);
+        let prefix_bits = ((p2 & 0x07) as u128) << 88;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[13]), 13);
+    }
+
+    // len=14: p2 >= 0x04 (0000_01xx)
+    if p2 >= 0x04 {
+        if data.len() < 14 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+            data[11], data[12], data[13], 0, 0, 0, 0,
+        ]) & ((1u128 << 96) - 1);
+        let prefix_bits = ((p2 & 0x03) as u128) << 96;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[14]), 14);
+    }
+
+    // len=15: p2 >= 0x02 (0000_001x)
+    if p2 >= 0x02 {
+        if data.len() < 15 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+            data[11], data[12], data[13], data[14], 0, 0, 0,
+        ]) & ((1u128 << 104) - 1);
+        let prefix_bits = ((p2 & 0x01) as u128) << 104;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[15]), 15);
+    }
+
+    // len=16: p2 == 0x01 (0000_0001)
+    if p2 == 0x01 {
+        if data.len() < 16 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+            data[11], data[12], data[13], data[14], data[15], 0, 0,
+        ]) & ((1u128 << 112) - 1);
+        return (raw.wrapping_add(OFFSETS_128_EXT[16]), 16);
+    }
+
+    // len=18: p2 == 0x00 (0000_0000) - raw 128-bit encoding
+    if data.len() < 18 {
+        return (0, 0);
+    }
+    let raw = u128::from_le_bytes([
+        data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+        data[12], data[13], data[14], data[15], data[16], data[17],
+    ]);
+    (raw.wrapping_add(OFFSETS_128_EXT[18]), 18)
 }
 
 /// An unsigned 128-bit integer in variable-length quantity encoding.

@@ -833,11 +833,14 @@ pub fn decode_vi128(n: Vi128) -> i128 {
 
 /// Decode a Vi128 from a byte slice.
 ///
-/// Returns `Some((value, bytes_consumed))` on success, or `None` if the slice is too short.
+/// Returns (value, bytes_consumed) on success, or (0, 0) if the slice is empty/invalid.
 #[inline(always)]
-pub fn decode_vi128_slice(data: &[u8]) -> Option<(i128, usize)> {
-    let (unsigned, len) = decode_vu128_slice(data)?;
-    Some((zigzag_decode_i128(unsigned), len))
+pub fn decode_vi128_slice(data: &[u8]) -> (i128, usize) {
+    let (unsigned, len) = decode_vu128_slice(data);
+    if len == 0 {
+        return (0, 0);
+    }
+    (zigzag_decode_i128(unsigned), len)
 }
 
 /// A signed 128-bit integer in value-length quantity encoding using zigzag.

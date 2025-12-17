@@ -3,11 +3,11 @@
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::{AsyncReadExt, AsyncWriteExt};
 
-use crate::ext::{AsyncReadVlqExt, AsyncWriteVlqExt};
+use crate::ext::{AsyncReadVintExt, AsyncWriteVintExt};
 use crate::{decode_vu32, decode_vu64, decode_vu128, encode_vu32, encode_vu64, encode_vu128};
 use crate::{vi32, vi64, vi128, vu32, vu64, vu128};
 
-impl<R: AsyncRead + Unpin> AsyncReadVlqExt for R {
+impl<R: AsyncRead + Unpin> AsyncReadVintExt for R {
     async fn read_vu32(&mut self) -> std::io::Result<u32> {
         let mut buf = [0u8; vu32::VU32_BUF_SIZE];
         AsyncReadExt::read_exact(self, &mut buf[0..1]).await?;
@@ -85,7 +85,7 @@ impl<R: AsyncRead + Unpin> AsyncReadVlqExt for R {
     }
 }
 
-impl<W: AsyncWrite + Unpin> AsyncWriteVlqExt for W {
+impl<W: AsyncWrite + Unpin> AsyncWriteVintExt for W {
     async fn write_vu32(&mut self, n: u32) -> std::io::Result<()> {
         let v = encode_vu32(n);
         AsyncWriteExt::write_all(self, &v.bytes()[..v.len() as usize]).await
