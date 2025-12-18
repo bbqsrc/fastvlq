@@ -58,9 +58,9 @@ pub mod ileb128;
 use std::io::{Read, Result as IoResult, Write};
 
 // Unsigned types
-pub use vu32::{Vu32, decode_vu32, decode_vu32_slice, encode_vu32};
-pub use vu64::{Vu64, decode_vu64, decode_vu64_slice, encode_vu64};
-pub use vu128::{Vu128, decode_vu128, decode_vu128_slice, encode_vu128};
+pub use vu32::{Vu32, decode_vu32_slice, encode_vu32};
+pub use vu64::{Vu64, decode_vu64_slice, encode_vu64};
+pub use vu128::{Vu128, decode_vu128_slice, encode_vu128};
 
 // Batch encoding
 pub use batch::{encode_vu64_batch, encode_vu64_batch_alloc};
@@ -118,15 +118,11 @@ impl<R: Read> ReadVintExt for R {
     fn read_vu32(&mut self) -> IoResult<u32> {
         let mut buf = [0u8; vu32::VU32_BUF_SIZE];
         self.read_exact(&mut buf[0..1])?;
-        let prefix = buf[0];
-        let len = vu32::decode_len_vu32(prefix) as usize;
+        let len = vu32::decode_len_vu32(buf[0]) as usize;
         if len > 1 {
             self.read_exact(&mut buf[1..len])?;
         }
-        let mut data_buf = [0u8; 4];
-        data_buf[..(len - 1).min(4)].copy_from_slice(&buf[1..len]);
-        let data = u32::from_le_bytes(data_buf);
-        Ok(decode_vu32(vu32::Vu32(prefix, data)))
+        Ok(decode_vu32_slice(&buf[..len]).0)
     }
 
     fn read_vi32(&mut self) -> IoResult<i32> {
@@ -136,18 +132,11 @@ impl<R: Read> ReadVintExt for R {
     fn read_vu64(&mut self) -> IoResult<u64> {
         let mut buf = [0u8; vu64::VU64_BUF_SIZE];
         self.read_exact(&mut buf[0..1])?;
-        let prefix = buf[0];
-        let len = vu64::decode_len_vu64(prefix) as usize;
+        let len = vu64::decode_len_vu64(buf[0]) as usize;
         if len > 1 {
             self.read_exact(&mut buf[1..len])?;
         }
-        // Pack data bytes into u64 (LE order)
-        let mut data_buf = [0u8; 8];
-        if len > 1 {
-            data_buf[..(len - 1)].copy_from_slice(&buf[1..len]);
-        }
-        let packed = u64::from_le_bytes(data_buf);
-        Ok(decode_vu64(vu64::Vu64(prefix, packed)))
+        Ok(decode_vu64_slice(&buf[..len]).0)
     }
 
     fn read_vi64(&mut self) -> IoResult<i64> {
@@ -159,33 +148,23 @@ impl<R: Read> ReadVintExt for R {
         self.read_exact(&mut buf[0..1])?;
         let p1 = buf[0];
 
-        if p1 == 0 {
-            // Extended format (10-18 bytes) - need second byte for length
+        let len = if p1 == 0 {
+            // Extended format - need second byte for length
             self.read_exact(&mut buf[1..2])?;
             let p2 = buf[1];
-            let len = vu128::decode_len_vu128(p1, p2) as usize;
-            if len > 2 {
-                self.read_exact(&mut buf[2..len])?;
-            }
-            let mut data_buf = [0u8; 16];
-            if len > 2 {
-                data_buf[..(len - 2)].copy_from_slice(&buf[2..len]);
-            }
-            let data = u128::from_le_bytes(data_buf);
-            Ok(decode_vu128(vu128::Vu128(p1, p2, data)))
+            vu128::decode_len_vu128(p1, p2) as usize
         } else {
-            // Standard format (len 1-8) - data goes in self.2
-            let len = vu128::decode_len_vu128(p1, 0) as usize;
-            if len > 1 {
-                self.read_exact(&mut buf[1..len])?;
-            }
-            let mut data_buf = [0u8; 16];
-            if len > 1 {
-                data_buf[..(len - 1)].copy_from_slice(&buf[1..len]);
-            }
-            let packed = u128::from_le_bytes(data_buf);
-            Ok(decode_vu128(vu128::Vu128(p1, 0, packed)))
+            // Standard format (len 1-8)
+            vu128::decode_len_vu128(p1, 0) as usize
+        };
+
+        // Read remaining bytes if needed
+        let bytes_read = if p1 == 0 { 2 } else { 1 };
+        if len > bytes_read {
+            self.read_exact(&mut buf[bytes_read..len])?;
         }
+
+        Ok(decode_vu128_slice(&buf[..len]).0)
     }
 
     fn read_vi128(&mut self) -> IoResult<i128> {

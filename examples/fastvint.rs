@@ -11,5 +11,5 @@ fn main() {
 
     let v = fastvint::encode_vu64(n);
     println!("Encoded: {:?}", v);
-    println!("Decoded: {}", fastvint::decode_vu64(v));
+    println!("Decoded: {}", v.get());
 }

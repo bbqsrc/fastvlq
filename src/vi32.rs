@@ -2,12 +2,17 @@
 
 use core::fmt::{Debug, Display};
 
+#[cfg(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+))]
+use crate::vu32::VU32_BUF_SIZE;
 #[cfg(not(any(
     all(target_arch = "aarch64", feature = "asm"),
     all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 use crate::vu32::encode_vu32;
-use crate::vu32::{Vu32, decode_vu32, decode_vu32_slice};
+use crate::vu32::{Vu32, decode_vu32_slice};
 
 /// Zigzag encode a signed i32 to unsigned u32.
 #[inline(always)]
@@ -22,103 +27,102 @@ pub const fn zigzag_decode_i32(n: u32) -> i32 {
 }
 
 /// Fused zigzag + encode for i32 using aarch64 inline asm.
+/// Writes directly to output buffer.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
-fn encode_vi32_asm(n: i32) -> (u8, u32) {
-    let prefix: u32;
-    let data: u32;
-    // SAFETY: Pure computation, no memory access.
+fn encode_vi32_asm(n: i32, out: &mut [u8; VU32_BUF_SIZE]) {
+    // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
             // Zigzag encode: ((n << 1) ^ (n >> 31))
-            "lsl    w4, w0, #1",
-            "eor    w0, w4, w0, asr #31",
+            "lsl    w4, {n:w}, #1",
+            "eor    {n:w}, w4, {n:w}, asr #31",
 
-            // Now w0 contains zigzag-encoded unsigned value
+            // Now n contains zigzag-encoded unsigned value
             // Compare against thresholds and branch
-            "cmp    w0, #128",
+            "cmp    {n:w}, #128",
             "b.lo   100f",
 
             "mov    w4, #0x4080",
-            "cmp    w0, w4",
+            "cmp    {n:w}, w4",
             "b.lo   101f",
 
             "mov    w4, #0x4080",
             "movk   w4, #0x20, lsl #16",
-            "cmp    w0, w4",
+            "cmp    {n:w}, w4",
             "b.lo   102f",
 
             "mov    w4, #0x4080",
             "movk   w4, #0x1020, lsl #16",
-            "cmp    w0, w4",
+            "cmp    {n:w}, w4",
             "b.lo   103f",
 
             // len=5: offset = 270549120 = 0x10204080
             "mov    w4, #0x4080",
             "movk   w4, #0x1020, lsl #16",
-            "sub    w1, w0, w4",
-            "mov    w2, #0x08",
+            "sub    {data:w}, {n:w}, w4",
+            "mov    {prefix:w}, #0x08",
             "b      200f",
 
             // len=1: n < 128
             "100:",
-            "orr    w2, w0, #0x80",
-            "mov    w1, #0",
+            "orr    {prefix:w}, {n:w}, #0x80",
+            "mov    {data:w}, #0",
             "b      200f",
 
             // len=2: offset = 128
             "101:",
-            "sub    w1, w0, #128",
-            "lsr    w2, w1, #8",
-            "orr    w2, w2, #0x40",
-            "and    w1, w1, #0xFF",
+            "sub    {data:w}, {n:w}, #128",
+            "lsr    {prefix:w}, {data:w}, #8",
+            "orr    {prefix:w}, {prefix:w}, #0x40",
             "b      200f",
 
             // len=3: offset = 16512 = 0x4080
             "102:",
             "mov    w4, #0x4080",
-            "sub    w1, w0, w4",
-            "lsr    w2, w1, #16",
-            "orr    w2, w2, #0x20",
-            "and    w1, w1, #0xFFFF",
+            "sub    {data:w}, {n:w}, w4",
+            "lsr    {prefix:w}, {data:w}, #16",
+            "orr    {prefix:w}, {prefix:w}, #0x20",
             "b      200f",
 
             // len=4: offset = 2113664 = 0x204080
             "103:",
             "mov    w4, #0x4080",
             "movk   w4, #0x20, lsl #16",
-            "sub    w1, w0, w4",
-            "lsr    w2, w1, #24",
-            "orr    w2, w2, #0x10",
-            "ubfx   w1, w1, #0, #24",
+            "sub    {data:w}, {n:w}, w4",
+            "lsr    {prefix:w}, {data:w}, #24",
+            "orr    {prefix:w}, {prefix:w}, #0x10",
 
             "200:",
+            // Write prefix byte and data word to output buffer
+            "strb   {prefix:w}, [{out}]",
+            "str    {data:w}, [{out}, #1]",
 
-            inout("w0") n => _,
-            out("w1") data,
-            out("w2") prefix,
+            n = inout(reg) n => _,
+            out = in(reg) out.as_mut_ptr(),
+            prefix = out(reg) _,
+            data = out(reg) _,
             out("w4") _,
-            options(pure, nomem, nostack),
+            options(nostack),
         );
     }
-    (prefix as u8, data)
 }
 
 /// Encode a signed i32 using zigzag encoding to VLQ.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vi32(n: i32) -> Vi32 {
-    let (prefix, data) = encode_vi32_asm(n);
-    Vi32(Vu32(prefix, data))
+    let mut bytes = [0u8; VU32_BUF_SIZE];
+    encode_vi32_asm(n, &mut bytes);
+    Vi32(Vu32(bytes))
 }
 
 /// Fused zigzag + encode for i32 using x86_64 inline asm.
+/// Writes directly to output buffer.
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
-fn encode_vi32_asm_x86(n: i32) -> (u8, u32) {
-    let prefix: u32;
-    let data: u32;
-    // SAFETY: Pure computation, no memory access.
+fn encode_vi32_asm_x86(n: i32, out: &mut [u8; VU32_BUF_SIZE]) {
+    // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
             // Zigzag encode: ((n << 1) ^ (n >> 31))
@@ -162,7 +166,6 @@ fn encode_vi32_asm_x86(n: i32) -> (u8, u32) {
             "mov    {prefix:e}, {data:e}",
             "shr    {prefix:e}, 8",
             "or     {prefix:e}, 0x40",
-            "and    {data:e}, 0xFF",
             "jmp    200f",
 
             // len=3
@@ -172,7 +175,6 @@ fn encode_vi32_asm_x86(n: i32) -> (u8, u32) {
             "mov    {prefix:e}, {data:e}",
             "shr    {prefix:e}, 16",
             "or     {prefix:e}, 0x20",
-            "and    {data:e}, 0xFFFF",
             "jmp    200f",
 
             // len=4
@@ -182,27 +184,30 @@ fn encode_vi32_asm_x86(n: i32) -> (u8, u32) {
             "mov    {prefix:e}, {data:e}",
             "shr    {prefix:e}, 24",
             "or     {prefix:e}, 0x10",
-            "and    {data:e}, 0xFFFFFF",
 
             "200:",
+            // Write prefix byte and data dword to output buffer
+            "mov    byte ptr [{out}], {prefix:l}",
+            "mov    dword ptr [{out} + 1], {data:e}",
 
             n = in(reg) n,
+            out = in(reg) out.as_mut_ptr(),
             zz = out(reg) _,
             sign = out(reg) _,
-            prefix = out(reg) prefix,
-            data = out(reg) data,
-            options(pure, nomem, nostack),
+            prefix = out(reg) _,
+            data = out(reg) _,
+            options(nostack),
         );
     }
-    (prefix as u8, data)
 }
 
 /// Encode a signed i32 using zigzag encoding to VLQ.
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vi32(n: i32) -> Vi32 {
-    let (prefix, data) = encode_vi32_asm_x86(n);
-    Vi32(Vu32(prefix, data))
+    let mut bytes = [0u8; VU32_BUF_SIZE];
+    encode_vi32_asm_x86(n, &mut bytes);
+    Vi32(Vu32(bytes))
 }
 
 /// Encode a signed i32 using zigzag encoding to VLQ.
@@ -218,7 +223,7 @@ pub fn encode_vi32(n: i32) -> Vi32 {
 /// Decode a Vi32 back to a native i32.
 #[inline(always)]
 pub fn decode_vi32(n: Vi32) -> i32 {
-    zigzag_decode_i32(decode_vu32(n.0))
+    n.get()
 }
 
 /// Decode a Vi32 from a byte slice.
@@ -249,7 +254,7 @@ impl Vi32 {
     /// Retrieve the stored number as `i32`.
     #[inline(always)]
     pub fn get(&self) -> i32 {
-        decode_vi32(*self)
+        zigzag_decode_i32(self.0.get())
     }
 
     /// Length of the internal representation in bytes.
@@ -260,7 +265,7 @@ impl Vi32 {
 
     /// Get the raw byte representation of the VLQ instance.
     #[inline(always)]
-    pub const fn bytes(&self) -> [u8; 5] {
+    pub fn bytes(&self) -> &[u8] {
         self.0.bytes()
     }
 }

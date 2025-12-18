@@ -382,17 +382,15 @@ pub fn decode_ileb128_i32(buf: &[u8]) -> (i32, usize) {
 pub fn decode_ileb128_i32(buf: &[u8]) -> (i32, usize) {
     let mut result: i32 = 0;
     let mut shift = 0;
-    let mut last_byte = 0u8;
     for (i, &byte) in buf.iter().enumerate() {
         if i >= 5 {
             return (0, 0);
         }
         result |= ((byte & 0x7f) as i32) << shift;
         shift += 7;
-        last_byte = byte;
         if byte & 0x80 == 0 {
             // Sign extend if necessary
-            if shift < 32 && (last_byte & 0x40) != 0 {
+            if shift < 32 && (byte & 0x40) != 0 {
                 result |= !0 << shift;
             }
             return (result, i + 1);
@@ -1160,17 +1158,15 @@ pub fn decode_ileb128_i64(buf: &[u8]) -> (i64, usize) {
 pub fn decode_ileb128_i64(buf: &[u8]) -> (i64, usize) {
     let mut result: i64 = 0;
     let mut shift = 0;
-    let mut last_byte = 0u8;
     for (i, &byte) in buf.iter().enumerate() {
         if i >= 10 {
             return (0, 0);
         }
         result |= ((byte & 0x7f) as i64) << shift;
         shift += 7;
-        last_byte = byte;
         if byte & 0x80 == 0 {
             // Sign extend if necessary
-            if shift < 64 && (last_byte & 0x40) != 0 {
+            if shift < 64 && (byte & 0x40) != 0 {
                 result |= !0i64 << shift;
             }
             return (result, i + 1);
@@ -1936,17 +1932,15 @@ pub fn decode_ileb128_i128(buf: &[u8]) -> (i128, usize) {
 pub fn decode_ileb128_i128(buf: &[u8]) -> (i128, usize) {
     let mut result: i128 = 0;
     let mut shift = 0;
-    let mut last_byte = 0u8;
     for (i, &byte) in buf.iter().enumerate() {
         if i >= 19 {
             return (0, 0);
         }
         result |= ((byte & 0x7f) as i128) << shift;
         shift += 7;
-        last_byte = byte;
         if byte & 0x80 == 0 {
             // Sign extend if necessary
-            if shift < 128 && (last_byte & 0x40) != 0 {
+            if shift < 128 && (byte & 0x40) != 0 {
                 result |= !0i128 << shift;
             }
             return (result, i + 1);

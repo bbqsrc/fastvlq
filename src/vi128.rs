@@ -2,12 +2,17 @@
 
 use core::fmt::{Debug, Display};
 
+#[cfg(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+))]
+use crate::vu128::VU128_BUF_SIZE;
 #[cfg(not(any(
     all(target_arch = "aarch64", feature = "asm"),
     all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 use crate::vu128::encode_vu128;
-use crate::vu128::{Vu128, decode_vu128, decode_vu128_slice};
+use crate::vu128::{Vu128, decode_vu128_slice};
 
 /// Zigzag encode a signed i128 to unsigned u128.
 #[inline(always)]
@@ -22,17 +27,14 @@ pub const fn zigzag_decode_i128(n: u128) -> i128 {
 }
 
 /// Fused zigzag + encode for i128 using aarch64 inline asm.
+/// Writes directly to output buffer.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
-fn encode_vi128_asm(n: i128) -> (u8, u8, u128) {
+fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
     let n_lo = n as u64;
     let n_hi = (n >> 64) as u64;
-    let prefix1: u64;
-    let prefix2: u64;
-    let data_lo: u64;
-    let data_hi: u64;
 
-    // SAFETY: Pure computation, no memory access.
+    // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
             // Zigzag encode: ((n << 1) ^ (n >> 127))
@@ -403,45 +405,53 @@ fn encode_vi128_asm(n: i128) -> (u8, u8, u128) {
             "b      200f",
 
             "200:",
+            // Write to output buffer
+            // p1 at offset 0
+            "strb   w5, [{out}]",
+            // Check if p1 == 0 (extended format where p2 is used)
+            "cbnz   w5, 201f",
+            // Extended format (len 9+): p2 at offset 1, data at offset 2
+            "strb   w6, [{out}, #1]",
+            "str    x2, [{out}, #2]",
+            "str    x3, [{out}, #10]",
+            "b      202f",
+            "201:",
+            // Standard format (len 1-8): data at offset 1
+            "str    x2, [{out}, #1]",
+            "202:",
 
             inout("x0") n_lo => _,
             inout("x1") n_hi => _,
-            out("x2") data_lo,
-            out("x3") data_hi,
+            out("x2") _,
+            out("x3") _,
             out("x4") _,
-            out("x5") prefix1,
-            out("x6") prefix2,
+            out("x5") _,
+            out("x6") _,
             out("x7") _,
-            options(pure, nomem, nostack),
+            out = in(reg) out.as_mut_ptr(),
+            options(nostack),
         );
     }
-    (
-        prefix1 as u8,
-        prefix2 as u8,
-        ((data_hi as u128) << 64) | (data_lo as u128),
-    )
 }
 
 /// Encode a signed i128 using zigzag encoding to VLQ.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vi128(n: i128) -> Vi128 {
-    let (p1, p2, data) = encode_vi128_asm(n);
-    Vi128(Vu128(p1, p2, data))
+    let mut bytes = [0u8; VU128_BUF_SIZE];
+    encode_vi128_asm(n, &mut bytes);
+    Vi128(Vu128(bytes))
 }
 
 /// Fused zigzag + encode for i128 using x86_64 inline asm.
+/// Writes directly to output buffer.
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
-fn encode_vi128_asm_x86(n: i128) -> (u8, u8, u128) {
+fn encode_vi128_asm_x86(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
     let n_lo = n as u64;
     let n_hi = (n >> 64) as u64;
-    let prefix1: u64;
-    let prefix2: u64;
-    let data_lo: u64;
-    let data_hi: u64;
 
-    // SAFETY: Pure computation, no memory access.
+    // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
             // Zigzag encode: ((n << 1) ^ (n >> 127))
@@ -786,6 +796,21 @@ fn encode_vi128_asm_x86(n: i128) -> (u8, u8, u128) {
             "jmp    200f",
 
             "200:",
+            // Write to output buffer
+            // p1 at offset 0
+            "mov    byte ptr [{out}], {prefix1:l}",
+            // Check if p1 == 0 (extended format where p2 is used)
+            "test   {prefix1:l}, {prefix1:l}",
+            "jnz    201f",
+            // Extended format (len 9+): p2 at offset 1, data at offset 2
+            "mov    byte ptr [{out} + 1], {prefix2:l}",
+            "mov    qword ptr [{out} + 2], {data_lo:r}",
+            "mov    qword ptr [{out} + 10], {data_hi:r}",
+            "jmp    202f",
+            "201:",
+            // Standard format (len 1-8): data at offset 1
+            "mov    qword ptr [{out} + 1], {data_lo:r}",
+            "202:",
 
             n_lo = in(reg) n_lo,
             n_hi = in(reg) n_hi,
@@ -793,26 +818,23 @@ fn encode_vi128_asm_x86(n: i128) -> (u8, u8, u128) {
             zz_hi = out(reg) _,
             sign = out(reg) _,
             tmp = out(reg) _,
-            prefix1 = out(reg) prefix1,
-            prefix2 = out(reg) prefix2,
-            data_lo = out(reg) data_lo,
-            data_hi = out(reg) data_hi,
-            options(pure, nomem, nostack),
+            prefix1 = out(reg) _,
+            prefix2 = out(reg) _,
+            data_lo = out(reg) _,
+            data_hi = out(reg) _,
+            out = in(reg) out.as_mut_ptr(),
+            options(nostack),
         );
     }
-    (
-        prefix1 as u8,
-        prefix2 as u8,
-        ((data_hi as u128) << 64) | (data_lo as u128),
-    )
 }
 
 /// Encode a signed i128 using zigzag encoding to VLQ.
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vi128(n: i128) -> Vi128 {
-    let (p1, p2, data) = encode_vi128_asm_x86(n);
-    Vi128(Vu128(p1, p2, data))
+    let mut bytes = [0u8; VU128_BUF_SIZE];
+    encode_vi128_asm_x86(n, &mut bytes);
+    Vi128(Vu128(bytes))
 }
 
 /// Encode a signed i128 using zigzag encoding to VLQ.
@@ -828,7 +850,7 @@ pub fn encode_vi128(n: i128) -> Vi128 {
 /// Decode a Vi128 back to a native i128.
 #[inline(always)]
 pub fn decode_vi128(n: Vi128) -> i128 {
-    zigzag_decode_i128(decode_vu128(n.0))
+    n.get()
 }
 
 /// Decode a Vi128 from a byte slice.
@@ -859,7 +881,7 @@ impl Vi128 {
     /// Retrieve the stored number as `i128`.
     #[inline(always)]
     pub fn get(&self) -> i128 {
-        decode_vi128(*self)
+        zigzag_decode_i128(self.0.get())
     }
 
     /// Length of the internal representation in bytes.
@@ -870,7 +892,7 @@ impl Vi128 {
 
     /// Get the raw byte representation of the VLQ instance.
     #[inline(always)]
-    pub const fn bytes(&self) -> [u8; 18] {
+    pub fn bytes(&self) -> &[u8] {
         self.0.bytes()
     }
 }

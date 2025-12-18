@@ -2,12 +2,17 @@
 
 use core::fmt::{Debug, Display};
 
+#[cfg(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+))]
+use crate::vu64::VU64_BUF_SIZE;
 #[cfg(not(any(
     all(target_arch = "aarch64", feature = "asm"),
     all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 )))]
 use crate::vu64::encode_vu64;
-use crate::vu64::{VU64_BUF_SIZE, Vu64, decode_vu64, decode_vu64_slice};
+use crate::vu64::{Vu64, decode_vu64_slice};
 
 /// Zigzag encode a signed i64 to unsigned u64.
 #[inline(always)]
@@ -22,61 +27,60 @@ pub const fn zigzag_decode_i64(n: u64) -> i64 {
 }
 
 /// Fused zigzag + encode for i64 using aarch64 inline asm.
+/// Writes directly to output buffer.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
-fn encode_vi64_asm(n: i64) -> (u8, u64) {
-    let prefix: u64;
-    let data: u64;
-    // SAFETY: Pure computation, no memory access.
+fn encode_vi64_asm(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
+    // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
             // Zigzag encode: ((n << 1) ^ (n >> 63))
-            "lsl    x4, x0, #1",
-            "eor    x0, x4, x0, asr #63",
+            "lsl    x4, {n}, #1",
+            "eor    {n}, x4, {n}, asr #63",
 
-            // Now x0 contains zigzag-encoded unsigned value
+            // Now {n} contains zigzag-encoded unsigned value
             // Compare against thresholds and branch
-            "cmp    x0, #128",
+            "cmp    {n}, #128",
             "b.lo   100f",
 
             "mov    x4, #0x4080",
-            "cmp    x0, x4",
+            "cmp    {n}, x4",
             "b.lo   101f",
 
             "mov    x4, #0x4080",
             "movk   x4, #0x20, lsl #16",
-            "cmp    x0, x4",
+            "cmp    {n}, x4",
             "b.lo   102f",
 
             "mov    x4, #0x4080",
             "movk   x4, #0x1020, lsl #16",
-            "cmp    x0, x4",
+            "cmp    {n}, x4",
             "b.lo   103f",
 
             "mov    x4, #0x4080",
             "movk   x4, #0x1020, lsl #16",
             "movk   x4, #0x8, lsl #32",
-            "cmp    x0, x4",
+            "cmp    {n}, x4",
             "b.lo   104f",
 
             "mov    x4, #0x4080",
             "movk   x4, #0x1020, lsl #16",
             "movk   x4, #0x408, lsl #32",
-            "cmp    x0, x4",
+            "cmp    {n}, x4",
             "b.lo   105f",
 
             "mov    x4, #0x4080",
             "movk   x4, #0x1020, lsl #16",
             "movk   x4, #0x0408, lsl #32",
             "movk   x4, #0x0002, lsl #48",
-            "cmp    x0, x4",
+            "cmp    {n}, x4",
             "b.lo   106f",
 
             "mov    x4, #0x4080",
             "movk   x4, #0x1020, lsl #16",
             "movk   x4, #0x0408, lsl #32",
             "movk   x4, #0x0102, lsl #48",
-            "cmp    x0, x4",
+            "cmp    {n}, x4",
             "b.lo   107f",
 
             // len=9: offset = 72624976668147840 = 0x0102_0408_1020_4080
@@ -84,51 +88,47 @@ fn encode_vi64_asm(n: i64) -> (u8, u64) {
             "movk   x4, #0x1020, lsl #16",
             "movk   x4, #0x0408, lsl #32",
             "movk   x4, #0x0102, lsl #48",
-            "sub    x1, x0, x4",
-            "mov    x2, #0x00",
+            "sub    {data}, {n}, x4",
+            "mov    {prefix}, #0x00",
             "b      200f",
 
             // len=1: n < 128
             "100:",
-            "orr    x2, x0, #0x80",
-            "mov    x1, #0",
+            "orr    {prefix}, {n}, #0x80",
+            "mov    {data}, #0",
             "b      200f",
 
             // len=2: offset = 128
             "101:",
-            "sub    x1, x0, #128",
-            "lsr    x2, x1, #8",
-            "orr    x2, x2, #0x40",
-            "and    x1, x1, #0xFF",
+            "sub    {data}, {n}, #128",
+            "lsr    {prefix}, {data}, #8",
+            "orr    {prefix}, {prefix}, #0x40",
             "b      200f",
 
             // len=3: offset = 16512
             "102:",
             "mov    x4, #0x4080",
-            "sub    x1, x0, x4",
-            "lsr    x2, x1, #16",
-            "orr    x2, x2, #0x20",
-            "and    x1, x1, #0xFFFF",
+            "sub    {data}, {n}, x4",
+            "lsr    {prefix}, {data}, #16",
+            "orr    {prefix}, {prefix}, #0x20",
             "b      200f",
 
             // len=4: offset = 2113664
             "103:",
             "mov    x4, #0x4080",
             "movk   x4, #0x20, lsl #16",
-            "sub    x1, x0, x4",
-            "lsr    x2, x1, #24",
-            "orr    x2, x2, #0x10",
-            "ubfx   x1, x1, #0, #24",
+            "sub    {data}, {n}, x4",
+            "lsr    {prefix}, {data}, #24",
+            "orr    {prefix}, {prefix}, #0x10",
             "b      200f",
 
             // len=5: offset = 270549120
             "104:",
             "mov    x4, #0x4080",
             "movk   x4, #0x1020, lsl #16",
-            "sub    x1, x0, x4",
-            "lsr    x2, x1, #32",
-            "orr    x2, x2, #0x08",
-            "and    x1, x1, #0xFFFFFFFF",
+            "sub    {data}, {n}, x4",
+            "lsr    {prefix}, {data}, #32",
+            "orr    {prefix}, {prefix}, #0x08",
             "b      200f",
 
             // len=6: offset = 34630287488
@@ -136,11 +136,9 @@ fn encode_vi64_asm(n: i64) -> (u8, u64) {
             "mov    x4, #0x4080",
             "movk   x4, #0x1020, lsl #16",
             "movk   x4, #0x8, lsl #32",
-            "sub    x1, x0, x4",
-            "lsr    x2, x1, #40",
-            "orr    x2, x2, #0x04",
-            "mov    x5, #0xFFFFFFFFFF",
-            "and    x1, x1, x5",
+            "sub    {data}, {n}, x4",
+            "lsr    {prefix}, {data}, #40",
+            "orr    {prefix}, {prefix}, #0x04",
             "b      200f",
 
             // len=7: offset = 4432676798592
@@ -148,11 +146,9 @@ fn encode_vi64_asm(n: i64) -> (u8, u64) {
             "mov    x4, #0x4080",
             "movk   x4, #0x1020, lsl #16",
             "movk   x4, #0x408, lsl #32",
-            "sub    x1, x0, x4",
-            "lsr    x2, x1, #48",
-            "orr    x2, x2, #0x02",
-            "mov    x5, #0xFFFFFFFFFFFF",
-            "and    x1, x1, x5",
+            "sub    {data}, {n}, x4",
+            "lsr    {prefix}, {data}, #48",
+            "orr    {prefix}, {prefix}, #0x02",
             "b      200f",
 
             // len=8: offset = 567382630219904
@@ -161,39 +157,39 @@ fn encode_vi64_asm(n: i64) -> (u8, u64) {
             "movk   x4, #0x1020, lsl #16",
             "movk   x4, #0x0408, lsl #32",
             "movk   x4, #0x0002, lsl #48",
-            "sub    x1, x0, x4",
-            "mov    x2, #0x01",
-            "mov    x5, #0xFFFFFFFFFFFFFF",
-            "and    x1, x1, x5",
+            "sub    {data}, {n}, x4",
+            "mov    {prefix}, #0x01",
 
             "200:",
+            // Write prefix byte and data to output buffer
+            "strb   {prefix:w}, [{out}]",
+            "str    {data}, [{out}, #1]",
 
-            inout("x0") n => _,
-            out("x1") data,
-            out("x2") prefix,
+            n = inout(reg) n => _,
+            out = in(reg) out.as_mut_ptr(),
+            data = out(reg) _,
+            prefix = out(reg) _,
             out("x4") _,
-            out("x5") _,
-            options(pure, nomem, nostack),
+            options(nostack),
         );
     }
-    (prefix as u8, data)
 }
 
 /// Encode a signed i64 using zigzag encoding to VLQ.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vi64(n: i64) -> Vi64 {
-    let (prefix, data) = encode_vi64_asm(n);
-    Vi64(Vu64(prefix, data))
+    let mut bytes = [0u8; VU64_BUF_SIZE];
+    encode_vi64_asm(n, &mut bytes);
+    Vi64(Vu64(bytes))
 }
 
 /// Fused zigzag + encode for i64 using x86_64 inline asm.
+/// Writes directly to output buffer.
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
-fn encode_vi64_asm_x86(n: i64) -> (u8, u64) {
-    let prefix: u64;
-    let data: u64;
-    // SAFETY: Pure computation, no memory access.
+fn encode_vi64_asm_x86(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
+    // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
             // Zigzag encode: ((n << 1) ^ (n >> 63))
@@ -257,7 +253,6 @@ fn encode_vi64_asm_x86(n: i64) -> (u8, u64) {
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 8",
             "or     {prefix:r}, 0x40",
-            "and    {data:r}, 0xFF",
             "jmp    200f",
 
             // len=3
@@ -267,7 +262,6 @@ fn encode_vi64_asm_x86(n: i64) -> (u8, u64) {
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 16",
             "or     {prefix:r}, 0x20",
-            "and    {data:r}, 0xFFFF",
             "jmp    200f",
 
             // len=4
@@ -277,7 +271,6 @@ fn encode_vi64_asm_x86(n: i64) -> (u8, u64) {
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 24",
             "or     {prefix:r}, 0x10",
-            "and    {data:r}, 0xFFFFFF",
             "jmp    200f",
 
             // len=5
@@ -288,8 +281,6 @@ fn encode_vi64_asm_x86(n: i64) -> (u8, u64) {
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 32",
             "or     {prefix:r}, 0x08",
-            "mov    {tmp:e}, 0xFFFFFFFF",
-            "and    {data:r}, {tmp:r}",
             "jmp    200f",
 
             // len=6
@@ -300,8 +291,6 @@ fn encode_vi64_asm_x86(n: i64) -> (u8, u64) {
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 40",
             "or     {prefix:r}, 0x04",
-            "movabs {tmp:r}, 0xFFFFFFFFFF",
-            "and    {data:r}, {tmp:r}",
             "jmp    200f",
 
             // len=7
@@ -312,8 +301,6 @@ fn encode_vi64_asm_x86(n: i64) -> (u8, u64) {
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 48",
             "or     {prefix:r}, 0x02",
-            "movabs {tmp:r}, 0xFFFFFFFFFFFF",
-            "and    {data:r}, {tmp:r}",
             "jmp    200f",
 
             // len=8
@@ -322,29 +309,31 @@ fn encode_vi64_asm_x86(n: i64) -> (u8, u64) {
             "mov    {data:r}, {zz:r}",
             "sub    {data:r}, {tmp:r}",
             "mov    {prefix:r}, 0x01",
-            "movabs {tmp:r}, 0xFFFFFFFFFFFFFF",
-            "and    {data:r}, {tmp:r}",
 
             "200:",
+            // Write prefix byte and data to output buffer
+            "mov    byte ptr [{out}], {prefix:l}",
+            "mov    qword ptr [{out} + 1], {data:r}",
 
             n = in(reg) n,
+            out = in(reg) out.as_mut_ptr(),
             zz = out(reg) _,
             sign = out(reg) _,
-            prefix = out(reg) prefix,
-            data = out(reg) data,
+            prefix = out(reg) _,
+            data = out(reg) _,
             tmp = out(reg) _,
-            options(pure, nomem, nostack),
+            options(nostack),
         );
     }
-    (prefix as u8, data)
 }
 
 /// Encode a signed i64 using zigzag encoding to VLQ.
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vi64(n: i64) -> Vi64 {
-    let (prefix, data) = encode_vi64_asm_x86(n);
-    Vi64(Vu64(prefix, data))
+    let mut bytes = [0u8; VU64_BUF_SIZE];
+    encode_vi64_asm_x86(n, &mut bytes);
+    Vi64(Vu64(bytes))
 }
 
 /// Encode a signed i64 using zigzag encoding to VLQ.
@@ -360,7 +349,7 @@ pub fn encode_vi64(n: i64) -> Vi64 {
 /// Decode a Vi64 back to a native i64.
 #[inline(always)]
 pub fn decode_vi64(n: Vi64) -> i64 {
-    zigzag_decode_i64(decode_vu64(n.0))
+    n.get()
 }
 
 /// Decode a Vi64 from a byte slice.
@@ -391,7 +380,7 @@ impl Vi64 {
     /// Retrieve the stored number as `i64`.
     #[inline(always)]
     pub fn get(&self) -> i64 {
-        decode_vi64(*self)
+        zigzag_decode_i64(self.0.get())
     }
 
     /// Length of the internal representation in bytes.
@@ -402,7 +391,7 @@ impl Vi64 {
 
     /// Get the raw byte representation of the VLQ instance.
     #[inline(always)]
-    pub const fn bytes(&self) -> [u8; VU64_BUF_SIZE] {
+    pub fn bytes(&self) -> &[u8] {
         self.0.bytes()
     }
 }
