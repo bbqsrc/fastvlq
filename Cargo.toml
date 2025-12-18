@@ -13,7 +13,6 @@ license = "Apache-2.0 OR MIT"
 futures-io = { version = "0.3", optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["io"], optional = true }
 tokio = { version = "1", default-features = false, features = ["io-util"], optional = true }
-stringly = { path = "../strings", optional = true }
 
 [dev-dependencies]
 proptest = "1.9"
@@ -37,4 +36,3 @@ async-futures = ["futures-io", "futures-util"]
 async-tokio = ["tokio"]
 asm = []
 bench = []
-string = ["stringly"]

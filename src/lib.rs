@@ -41,7 +41,6 @@ mod macros;
 mod vi128;
 mod vi32;
 mod vi64;
-// mod vu21;
 mod vu128;
 mod vu32;
 mod vu64;
@@ -63,7 +62,6 @@ pub mod ileb128;
 use std::io::{Read, Result as IoResult, Write};
 
 // Unsigned types
-// pub use vu21::{Vu21, decode_vu21_slice, encode_vu21};
 pub use vu32::{Vu32, decode_vu32_slice, encode_vu32};
 pub use vu64::{Vu64, decode_vu64_slice, encode_vu64};
 pub use vu128::{Vu128, decode_vu128_slice, encode_vu128};
@@ -84,9 +82,6 @@ pub use vi128::{
 
 #[cfg(any(feature = "async-futures", feature = "async-tokio"))]
 pub use ext::{AsyncReadVintExt, AsyncWriteVintExt};
-
-#[cfg(feature = "string")]
-pub use string::UtfVu21;
 
 #[cfg(feature = "std")]
 /// Extension trait for reading VLQ-encoded integers from a reader.
@@ -153,27 +148,27 @@ impl<R: Read> ReadVintExt for R {
     }
 
     fn read_vu128(&mut self) -> IoResult<u128> {
-        let mut buf = [0u8; vu128::VU128_BUF_SIZE];
-        self.read_exact(&mut buf[0..1])?;
-        let p1 = buf[0];
+        let mut buf = [0u8; 1];
+        self.read_exact(&mut buf)?;
 
-        let len = if p1 == 0 {
-            // Extended format - need second byte for length
-            self.read_exact(&mut buf[1..2])?;
-            let p2 = buf[1];
-            vu128::decode_len_vu128(p1, p2) as usize
-        } else {
-            // Standard format (len 1-8)
-            vu128::decode_len_vu128(p1, 0) as usize
-        };
-
-        // Read remaining bytes if needed
-        let bytes_read = if p1 == 0 { 2 } else { 1 };
-        if len > bytes_read {
-            self.read_exact(&mut buf[bytes_read..len])?;
+        if buf[0] != 0x00 {
+            // Compact: vu64 for lo, hi = 0
+            let mut full_buf = [0u8; vu64::VU64_BUF_SIZE];
+            full_buf[0] = buf[0];
+            let len = vu64::decode_len_vu64(buf[0]) as usize;
+            if len > 1 {
+                self.read_exact(&mut full_buf[1..len])?;
+            }
+            return Ok(decode_vu64_slice(&full_buf[..len]).0 as u128);
         }
 
-        Ok(decode_vu128_slice(&buf[..len]).0)
+        // Extended: 0x00 + lo raw (8 bytes) + vu64(hi)
+        let mut lo_buf = [0u8; 8];
+        self.read_exact(&mut lo_buf)?;
+        let lo = u64::from_le_bytes(lo_buf);
+
+        let hi = self.read_vu64()?;
+        Ok(((hi as u128) << 64) | (lo as u128))
     }
 
     fn read_vi128(&mut self) -> IoResult<i128> {

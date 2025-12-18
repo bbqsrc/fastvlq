@@ -1,5 +1,116 @@
 use fastvint::*;
 
+// Short buffer tests - verify decoders handle truncated input gracefully
+// Prefix patterns: 1xxx_xxxx=1B, 01xx_xxxx=2B, 001x_xxxx=3B, 0001_xxxx=4B, etc.
+
+#[test]
+fn decode_vu32_short_buffer() {
+    // Empty buffer
+    assert_eq!(decode_vu32_slice(&[]), (0, 0));
+
+    // 2-byte prefix (0x40) with only 1 byte
+    assert_eq!(decode_vu32_slice(&[0x40]), (0, 0));
+
+    // 3-byte prefix (0x20) with only 1-2 bytes
+    assert_eq!(decode_vu32_slice(&[0x20]), (0, 0));
+    assert_eq!(decode_vu32_slice(&[0x20, 0x00]), (0, 0));
+
+    // 4-byte prefix (0x10) with only 1-3 bytes
+    assert_eq!(decode_vu32_slice(&[0x10]), (0, 0));
+    assert_eq!(decode_vu32_slice(&[0x10, 0x00]), (0, 0));
+    assert_eq!(decode_vu32_slice(&[0x10, 0x00, 0x00]), (0, 0));
+
+    // 5-byte prefix (0x08) with only 1-4 bytes
+    assert_eq!(decode_vu32_slice(&[0x08]), (0, 0));
+    assert_eq!(decode_vu32_slice(&[0x08, 0x00, 0x00]), (0, 0));
+    assert_eq!(decode_vu32_slice(&[0x08, 0x00, 0x00, 0x00]), (0, 0));
+}
+
+#[test]
+fn decode_vu64_short_buffer() {
+    // Empty buffer
+    assert_eq!(decode_vu64_slice(&[]), (0, 0));
+
+    // 2-byte prefix (0x40) with only 1 byte
+    assert_eq!(decode_vu64_slice(&[0x40]), (0, 0));
+
+    // 3-byte prefix (0x20) with only 1-2 bytes
+    assert_eq!(decode_vu64_slice(&[0x20]), (0, 0));
+    assert_eq!(decode_vu64_slice(&[0x20, 0x00]), (0, 0));
+
+    // 4-byte prefix (0x10) with only 1-3 bytes
+    assert_eq!(decode_vu64_slice(&[0x10]), (0, 0));
+    assert_eq!(decode_vu64_slice(&[0x10, 0x00]), (0, 0));
+    assert_eq!(decode_vu64_slice(&[0x10, 0x00, 0x00]), (0, 0));
+
+    // 5-byte prefix (0x08) with only 1-4 bytes
+    assert_eq!(decode_vu64_slice(&[0x08]), (0, 0));
+    assert_eq!(decode_vu64_slice(&[0x08, 0x00, 0x00, 0x00]), (0, 0));
+
+    // 6-byte prefix (0x04) with only 1-5 bytes
+    assert_eq!(decode_vu64_slice(&[0x04]), (0, 0));
+    assert_eq!(decode_vu64_slice(&[0x04, 0x00, 0x00, 0x00, 0x00]), (0, 0));
+
+    // 7-byte prefix (0x02) with only 1-6 bytes
+    assert_eq!(decode_vu64_slice(&[0x02]), (0, 0));
+
+    // 8-byte prefix (0x01) with only 1-7 bytes
+    assert_eq!(decode_vu64_slice(&[0x01]), (0, 0));
+
+    // 9-byte prefix (0x00) with only 1-8 bytes
+    assert_eq!(decode_vu64_slice(&[0x00]), (0, 0));
+    assert_eq!(decode_vu64_slice(&[0x00, 0x00, 0x00, 0x00]), (0, 0));
+    assert_eq!(
+        decode_vu64_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        (0, 0)
+    );
+}
+
+#[test]
+fn decode_vu128_short_buffer() {
+    // Empty buffer
+    assert_eq!(decode_vu128_slice(&[]), (0, 0));
+
+    // 2-byte prefix (0x40) with only 1 byte
+    assert_eq!(decode_vu128_slice(&[0x40]), (0, 0));
+
+    // 3-byte prefix (0x20) with only 1-2 bytes
+    assert_eq!(decode_vu128_slice(&[0x20]), (0, 0));
+    assert_eq!(decode_vu128_slice(&[0x20, 0x00]), (0, 0));
+
+    // 9-byte prefix (0x00, first byte != 0x00 for extended) with only 1-8 bytes
+    assert_eq!(decode_vu128_slice(&[0x00]), (0, 0));
+    assert_eq!(
+        decode_vu128_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        (0, 0)
+    );
+}
+
+#[test]
+fn decode_vi32_short_buffer() {
+    // Signed uses same underlying encoding, just zigzag decoded
+    assert_eq!(decode_vi32_slice(&[]), (0, 0));
+    assert_eq!(decode_vi32_slice(&[0x40]), (0, 0));
+    assert_eq!(decode_vi32_slice(&[0x20]), (0, 0));
+    assert_eq!(decode_vi32_slice(&[0x20, 0x00]), (0, 0));
+}
+
+#[test]
+fn decode_vi64_short_buffer() {
+    assert_eq!(decode_vi64_slice(&[]), (0, 0));
+    assert_eq!(decode_vi64_slice(&[0x40]), (0, 0));
+    assert_eq!(decode_vi64_slice(&[0x20]), (0, 0));
+    assert_eq!(decode_vi64_slice(&[0x00]), (0, 0));
+}
+
+#[test]
+fn decode_vi128_short_buffer() {
+    assert_eq!(decode_vi128_slice(&[]), (0, 0));
+    assert_eq!(decode_vi128_slice(&[0x40]), (0, 0));
+    assert_eq!(decode_vi128_slice(&[0x20]), (0, 0));
+    assert_eq!(decode_vi128_slice(&[0x00]), (0, 0));
+}
+
 #[test]
 fn check_decode_len() {
     // Test decode_len for vu64 through encoding and checking lengths
