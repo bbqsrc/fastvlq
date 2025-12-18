@@ -438,9 +438,12 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vi128(n: i128) -> Vi128 {
-    let mut bytes = [0u8; VU128_BUF_SIZE];
-    encode_vi128_asm(n, &mut bytes);
-    Vi128(Vu128(bytes))
+    let mut bytes = core::mem::MaybeUninit::<[u8; VU128_BUF_SIZE]>::uninit();
+    // SAFETY: ASM writes 1-2 bytes prefix at offset 0-1 and up to 16 bytes data
+    unsafe {
+        encode_vi128_asm(n, &mut *bytes.as_mut_ptr());
+        Vi128(Vu128(bytes.assume_init()))
+    }
 }
 
 /// Fused zigzag + encode for i128 using x86_64 inline asm.
@@ -832,9 +835,12 @@ fn encode_vi128_asm_x86(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vi128(n: i128) -> Vi128 {
-    let mut bytes = [0u8; VU128_BUF_SIZE];
-    encode_vi128_asm_x86(n, &mut bytes);
-    Vi128(Vu128(bytes))
+    let mut bytes = core::mem::MaybeUninit::<[u8; VU128_BUF_SIZE]>::uninit();
+    // SAFETY: ASM writes 1-2 bytes prefix at offset 0-1 and up to 16 bytes data
+    unsafe {
+        encode_vi128_asm_x86(n, &mut *bytes.as_mut_ptr());
+        Vi128(Vu128(bytes.assume_init()))
+    }
 }
 
 /// Encode a signed i128 using zigzag encoding to VLQ.

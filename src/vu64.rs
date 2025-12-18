@@ -11,131 +11,109 @@ pub(crate) const fn decode_len_vu64(n: u8) -> u8 {
 }
 
 // Offset constants for ASM encoding (thresholds for length determination)
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-const ENC_OFF2: u64 = 0x80;
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-const ENC_OFF3: u64 = 0x4080;
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-const ENC_OFF4: u64 = 0x20_4080;
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-const ENC_OFF5: u64 = 0x1020_4080;
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-const ENC_OFF6: u64 = 0x0008_1020_4080;
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-const ENC_OFF7: u64 = 0x0408_1020_4080;
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-const ENC_OFF8: u64 = 0x0002_0408_1020_4080;
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-const ENC_OFF9: u64 = 0x0102_0408_1020_4080;
+#[cfg(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+))]
+pub(crate) mod enc_offsets {
+    pub const OFF2: u64 = 0x80;
+    pub const OFF3: u64 = 0x4080;
+    pub const OFF4: u64 = 0x20_4080;
+    pub const OFF5: u64 = 0x1020_4080;
+    pub const OFF6: u64 = 0x0008_1020_4080;
+    pub const OFF7: u64 = 0x0408_1020_4080;
+    pub const OFF8: u64 = 0x0002_0408_1020_4080;
+    pub const OFF9: u64 = 0x0102_0408_1020_4080;
+}
 
-// x86_64 offset constants for ASM encoding (thresholds for length determination)
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
-const X86_OFF2: u64 = 0x80;
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
-const X86_OFF3: u64 = 0x4080;
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
-const X86_OFF4: u64 = 0x20_4080;
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
-const X86_OFF5: u64 = 0x1020_4080;
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
-const X86_OFF6: u64 = 0x0008_1020_4080;
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
-const X86_OFF7: u64 = 0x0408_1020_4080;
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
-const X86_OFF8: u64 = 0x0002_0408_1020_4080;
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
-const X86_OFF9: u64 = 0x0102_0408_1020_4080;
-
-/// Encode a u64 in VLQ format using aarch64 inline asm.
-/// Writes directly to output buffer.
+/// Encode a u64 in VLQ format using aarch64 inline asm with logarithm-based dispatch.
+/// Uses the formula: idx = (56 - clz(127*n + 128)) / 7
+/// This gives exact handler index without boundary checks in handlers.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
-fn encode_vu64_asm(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
+fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
+    use enc_offsets::*;
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
-            // Compare against preloaded thresholds and branch
-            "cmp    {val}, {off2}",
-            "b.lo   100f",
-
-            "cmp    {val}, {off3}",
-            "b.lo   101f",
-
-            "cmp    {val}, {off4}",
-            "b.lo   102f",
-
-            "cmp    {val}, {off5}",
-            "b.lo   103f",
-
-            "cmp    {val}, {off6}",
-            "b.lo   104f",
-
-            "cmp    {val}, {off7}",
-            "b.lo   105f",
-
-            "cmp    {val}, {off8}",
-            "b.lo   106f",
-
+            // Check for len=9 first (avoids overflow in 127*n + 128)
             "cmp    {val}, {off9}",
-            "b.lo   107f",
+            "b.hs   9f",
 
-            // len=9: val >= offset!(9)
-            "sub    {data}, {val}, {off9}",
-            "mov    {prefix}, #0x00",
-            "b      200f",
+            // Compute 127*n + 128 using madd: tmp = 127*val + 128
+            "mov    {tmp}, #127",
+            "mov    {idx}, #128",
+            "madd   {tmp}, {val}, {tmp}, {idx}",
 
-            // len=1: val < 128
-            "100:",
+            // Get CLZ and compute idx = (56 - clz) / 7
+            "clz    {tmp}, {tmp}",
+            "mov    {idx}, #56",
+            "sub    {idx}, {idx}, {tmp}",
+            "mov    {tmp}, #37",
+            "mul    {idx}, {idx}, {tmp}",
+            "lsr    {idx}, {idx}, #8",
+
+            // Computed branch (each handler is 16 bytes = 4 instructions)
+            "adr    {jump}, 1f",
+            "add    {jump}, {jump}, {idx}, lsl #4",
+            "br     {jump}",
+
+            // Handler table - each handler is exactly 16 bytes (4 instructions)
+            ".p2align 4",
+            "1:",
+
+            // idx=0 (len=1): n < 128
             "orr    {prefix}, {val}, #0x80",
             "mov    {data}, #0",
             "b      200f",
+            "nop",
 
-            // len=2: offset = 128
-            "101:",
+            // idx=1 (len=2): 128 <= n < 16512
             "sub    {data}, {val}, {off2}",
             "lsr    {prefix}, {data}, #8",
             "orr    {prefix}, {prefix}, #0x40",
             "b      200f",
 
-            // len=3: offset = 16512
-            "102:",
+            // idx=2 (len=3): 16512 <= n < 2113664
             "sub    {data}, {val}, {off3}",
             "lsr    {prefix}, {data}, #16",
             "orr    {prefix}, {prefix}, #0x20",
             "b      200f",
 
-            // len=4: offset = 2113664
-            "103:",
+            // idx=3 (len=4): 2113664 <= n < 270549120
             "sub    {data}, {val}, {off4}",
             "lsr    {prefix}, {data}, #24",
             "orr    {prefix}, {prefix}, #0x10",
             "b      200f",
 
-            // len=5: offset = 270549120
-            "104:",
+            // idx=4 (len=5): 270549120 <= n < 34630287488
             "sub    {data}, {val}, {off5}",
             "lsr    {prefix}, {data}, #32",
             "orr    {prefix}, {prefix}, #0x08",
             "b      200f",
 
-            // len=6: offset = 34630287488
-            "105:",
+            // idx=5 (len=6): 34630287488 <= n < 4432676798592
             "sub    {data}, {val}, {off6}",
             "lsr    {prefix}, {data}, #40",
             "orr    {prefix}, {prefix}, #0x04",
             "b      200f",
 
-            // len=7: offset = 4432676798592
-            "106:",
+            // idx=6 (len=7): 4432676798592 <= n < 567382630219904
             "sub    {data}, {val}, {off7}",
             "lsr    {prefix}, {data}, #48",
             "orr    {prefix}, {prefix}, #0x02",
             "b      200f",
 
-            // len=8: offset = 567382630219904
-            "107:",
+            // idx=7 (len=8): 567382630219904 <= n < 72624976668147840
             "sub    {data}, {val}, {off8}",
             "mov    {prefix}, #0x01",
+            "b      200f",
+            "nop",
+
+            // idx=8 (len=9): n >= 72624976668147840
+            "9:",
+            "sub    {data}, {val}, {off9}",
+            "mov    {prefix}, #0x00",
 
             "200:",
             // Write prefix byte and data to output buffer
@@ -144,14 +122,17 @@ fn encode_vu64_asm(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
 
             val = in(reg) n,
             out = in(reg) out.as_mut_ptr(),
-            off2 = in(reg) ENC_OFF2,
-            off3 = in(reg) ENC_OFF3,
-            off4 = in(reg) ENC_OFF4,
-            off5 = in(reg) ENC_OFF5,
-            off6 = in(reg) ENC_OFF6,
-            off7 = in(reg) ENC_OFF7,
-            off8 = in(reg) ENC_OFF8,
-            off9 = in(reg) ENC_OFF9,
+            off2 = in(reg) OFF2,
+            off3 = in(reg) OFF3,
+            off4 = in(reg) OFF4,
+            off5 = in(reg) OFF5,
+            off6 = in(reg) OFF6,
+            off7 = in(reg) OFF7,
+            off8 = in(reg) OFF8,
+            off9 = in(reg) OFF9,
+            tmp = out(reg) _,
+            idx = out(reg) _,
+            jump = out(reg) _,
             data = out(reg) _,
             prefix = out(reg) _,
             options(nostack),
@@ -159,120 +140,118 @@ fn encode_vu64_asm(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
     }
 }
 
-/// Encode a u64 in VLQ format.
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-#[inline(always)]
-pub fn encode_vu64(n: u64) -> Vu64 {
-    let mut bytes = [0u8; VU64_BUF_SIZE];
-    encode_vu64_asm(n, &mut bytes);
-    Vu64(bytes)
-}
-
-/// Encode a u64 in VLQ format using x86_64 inline asm.
-/// Writes directly to output buffer.
+/// Encode a u64 in VLQ format using x86_64 inline asm with logarithm-based dispatch.
+/// Uses the formula: idx = (56 - lzcnt(127*n + 128)) / 7
+/// This gives exact handler index without boundary checks in handlers.
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
-fn encode_vu64_asm_x86(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
+fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
+    use enc_offsets::*;
+
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
-            // Compare against preloaded thresholds and branch
-            "cmp    {n:r}, {off2:r}",
-            "jb     100f",
-
-            "cmp    {n:r}, {off3:r}",
-            "jb     101f",
-
-            "cmp    {n:r}, {off4:r}",
-            "jb     102f",
-
-            "cmp    {n:r}, {off5:r}",
-            "jb     103f",
-
-            "cmp    {n:r}, {off6:r}",
-            "jb     104f",
-
-            "cmp    {n:r}, {off7:r}",
-            "jb     105f",
-
-            "cmp    {n:r}, {off8:r}",
-            "jb     106f",
-
+            // Check for len=9 first (avoids overflow in 127*n + 128)
             "cmp    {n:r}, {off9:r}",
-            "jb     107f",
+            "jae    9f",
 
-            // len=9
-            "mov    {data:r}, {n:r}",
-            "sub    {data:r}, {off9:r}",
-            "xor    {prefix:r}, {prefix:r}",
-            "jmp    200f",
+            // Compute 127*n + 128
+            "imul   {tmp:r}, {n:r}, 127",
+            "add    {tmp:r}, 128",
 
-            // len=1
-            "100:",
+            // Get CLZ and compute idx = (56 - clz) / 7
+            "lzcnt  {tmp:r}, {tmp:r}",
+            "mov    {idx:e}, 56",
+            "sub    {idx:e}, {tmp:e}",
+            "imul   {idx:e}, {idx:e}, 37",
+            "shr    {idx:e}, 8",
+
+            // Computed branch (each handler is 32 bytes)
+            "lea    {jump:r}, [rip + 1f]",
+            "shl    {idx:e}, 5",
+            "add    {jump:r}, {idx:r}",
+            "jmp    {jump:r}",
+
+            // Handler table - each handler is exactly 32 bytes
+            ".p2align 5",
+            "1:",
+
+            // idx=0 (len=1): n < 128
             "mov    {prefix:r}, {n:r}",
             "or     {prefix:r}, 0x80",
             "xor    {data:r}, {data:r}",
             "jmp    200f",
+            ".byte 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00",  // 8-byte nop
+            ".byte 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00",  // 8-byte nop
+            ".byte 0x0f, 0x1f, 0x40, 0x00",  // 4-byte nop
 
-            // len=2
-            "101:",
+            // idx=1 (len=2): 128 <= n < 16512
             "mov    {data:r}, {n:r}",
             "sub    {data:r}, {off2:r}",
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 8",
             "or     {prefix:r}, 0x40",
             "jmp    200f",
+            ".byte 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00",  // 8-byte nop
 
-            // len=3
-            "102:",
+            // idx=2 (len=3): 16512 <= n < 2113664
             "mov    {data:r}, {n:r}",
             "sub    {data:r}, {off3:r}",
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 16",
             "or     {prefix:r}, 0x20",
             "jmp    200f",
+            ".byte 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00",  // 8-byte nop
 
-            // len=4
-            "103:",
+            // idx=3 (len=4): 2113664 <= n < 270549120
             "mov    {data:r}, {n:r}",
             "sub    {data:r}, {off4:r}",
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 24",
             "or     {prefix:r}, 0x10",
             "jmp    200f",
+            ".byte 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00",  // 8-byte nop
 
-            // len=5
-            "104:",
+            // idx=4 (len=5): 270549120 <= n < 34630287488
             "mov    {data:r}, {n:r}",
             "sub    {data:r}, {off5:r}",
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 32",
             "or     {prefix:r}, 0x08",
             "jmp    200f",
+            ".byte 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00",  // 8-byte nop
 
-            // len=6
-            "105:",
+            // idx=5 (len=6): 34630287488 <= n < 4432676798592
             "mov    {data:r}, {n:r}",
             "sub    {data:r}, {off6:r}",
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 40",
             "or     {prefix:r}, 0x04",
             "jmp    200f",
+            ".byte 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00",  // 8-byte nop
 
-            // len=7
-            "106:",
+            // idx=6 (len=7): 4432676798592 <= n < 567382630219904
             "mov    {data:r}, {n:r}",
             "sub    {data:r}, {off7:r}",
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 48",
             "or     {prefix:r}, 0x02",
             "jmp    200f",
+            ".byte 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00",  // 8-byte nop
 
-            // len=8
-            "107:",
+            // idx=7 (len=8): 567382630219904 <= n < 72624976668147840
             "mov    {data:r}, {n:r}",
             "sub    {data:r}, {off8:r}",
             "mov    {prefix:r}, 0x01",
+            "jmp    200f",
+            ".byte 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00",  // 8-byte nop
+            ".byte 0x0f, 0x1f, 0x40, 0x00",  // 4-byte nop
+
+            // idx=8 (len=9): n >= 72624976668147840
+            "9:",
+            "mov    {data:r}, {n:r}",
+            "sub    {data:r}, {off9:r}",
+            "xor    {prefix:r}, {prefix:r}",
 
             "200:",
             // Write prefix byte and data to output buffer
@@ -281,14 +260,17 @@ fn encode_vu64_asm_x86(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
 
             n = in(reg) n,
             out = in(reg) out.as_mut_ptr(),
-            off2 = in(reg) X86_OFF2,
-            off3 = in(reg) X86_OFF3,
-            off4 = in(reg) X86_OFF4,
-            off5 = in(reg) X86_OFF5,
-            off6 = in(reg) X86_OFF6,
-            off7 = in(reg) X86_OFF7,
-            off8 = in(reg) X86_OFF8,
-            off9 = in(reg) X86_OFF9,
+            off2 = in(reg) OFF2,
+            off3 = in(reg) OFF3,
+            off4 = in(reg) OFF4,
+            off5 = in(reg) OFF5,
+            off6 = in(reg) OFF6,
+            off7 = in(reg) OFF7,
+            off8 = in(reg) OFF8,
+            off9 = in(reg) OFF9,
+            tmp = out(reg) _,
+            idx = out(reg) _,
+            jump = out(reg) _,
             prefix = out(reg) _,
             data = out(reg) _,
             options(nostack),
@@ -297,126 +279,132 @@ fn encode_vu64_asm_x86(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
 }
 
 /// Encode a u64 in VLQ format.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vu64(n: u64) -> Vu64 {
-    let mut bytes = [0u8; VU64_BUF_SIZE];
-    encode_vu64_asm_x86(n, &mut bytes);
-    Vu64(bytes)
-}
+    #[cfg(any(
+        all(target_arch = "aarch64", feature = "asm"),
+        all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+    ))]
+    {
+        let mut bytes = core::mem::MaybeUninit::<[u8; VU64_BUF_SIZE]>::uninit();
+        // SAFETY: ASM writes 1 byte at offset 0 (prefix) and 8 bytes at offset 1 (data)
+        unsafe {
+            encode_vu64_impl(n, &mut *bytes.as_mut_ptr());
+            Vu64(bytes.assume_init())
+        }
+    }
 
-/// Encode a u64 in VLQ format.
-#[cfg(not(any(
-    all(target_arch = "aarch64", feature = "asm"),
-    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
-)))]
-#[inline(always)]
-pub const fn encode_vu64(n: u64) -> Vu64 {
-    if n < offset!(2) as u64 {
-        // len=1: all data in prefix
-        Vu64([0x80 | (n as u8), 0, 0, 0, 0, 0, 0, 0, 0])
-    } else if n < offset!(3) as u64 {
-        // len=2: 1 data byte
-        let val = n - offset!(2) as u64;
-        Vu64([0x40 | ((val >> 8) as u8), val as u8, 0, 0, 0, 0, 0, 0, 0])
-    } else if n < offset!(4) as u64 {
-        // len=3: 2 data bytes
-        let val = n - offset!(3) as u64;
-        Vu64([
-            0x20 | ((val >> 16) as u8),
-            val as u8,
-            (val >> 8) as u8,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ])
-    } else if n < offset!(5) {
-        // len=4: 3 data bytes
-        let val = n - offset!(4) as u64;
-        Vu64([
-            0x10 | ((val >> 24) as u8),
-            val as u8,
-            (val >> 8) as u8,
-            (val >> 16) as u8,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ])
-    } else if n < offset!(6) {
-        // len=5: 4 data bytes
-        let val = n - offset!(5);
-        Vu64([
-            0x08 | ((val >> 32) as u8),
-            val as u8,
-            (val >> 8) as u8,
-            (val >> 16) as u8,
-            (val >> 24) as u8,
-            0,
-            0,
-            0,
-            0,
-        ])
-    } else if n < offset!(7) {
-        // len=6: 5 data bytes
-        let val = n - offset!(6);
-        Vu64([
-            0x04 | ((val >> 40) as u8),
-            val as u8,
-            (val >> 8) as u8,
-            (val >> 16) as u8,
-            (val >> 24) as u8,
-            (val >> 32) as u8,
-            0,
-            0,
-            0,
-        ])
-    } else if n < offset!(8) {
-        // len=7: 6 data bytes
-        let val = n - offset!(7);
-        Vu64([
-            0x02 | ((val >> 48) as u8),
-            val as u8,
-            (val >> 8) as u8,
-            (val >> 16) as u8,
-            (val >> 24) as u8,
-            (val >> 32) as u8,
-            (val >> 40) as u8,
-            0,
-            0,
-        ])
-    } else if n < offset!(9) {
-        // len=8: 7 data bytes
-        let val = n - offset!(8);
-        Vu64([
-            0x01,
-            val as u8,
-            (val >> 8) as u8,
-            (val >> 16) as u8,
-            (val >> 24) as u8,
-            (val >> 32) as u8,
-            (val >> 40) as u8,
-            (val >> 48) as u8,
-            0,
-        ])
-    } else {
-        // len=9: 8 data bytes
-        let val = n - offset!(9);
-        Vu64([
-            0x00,
-            val as u8,
-            (val >> 8) as u8,
-            (val >> 16) as u8,
-            (val >> 24) as u8,
-            (val >> 32) as u8,
-            (val >> 40) as u8,
-            (val >> 48) as u8,
-            (val >> 56) as u8,
-        ])
+    #[cfg(not(any(
+        all(target_arch = "aarch64", feature = "asm"),
+        all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+    )))]
+    {
+        if n < offset!(2) as u64 {
+            // len=1: all data in prefix
+            Vu64([0x80 | (n as u8), 0, 0, 0, 0, 0, 0, 0, 0])
+        } else if n < offset!(3) as u64 {
+            // len=2: 1 data byte
+            let val = n - offset!(2) as u64;
+            Vu64([0x40 | ((val >> 8) as u8), val as u8, 0, 0, 0, 0, 0, 0, 0])
+        } else if n < offset!(4) as u64 {
+            // len=3: 2 data bytes
+            let val = n - offset!(3) as u64;
+            Vu64([
+                0x20 | ((val >> 16) as u8),
+                val as u8,
+                (val >> 8) as u8,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+        } else if n < offset!(5) {
+            // len=4: 3 data bytes
+            let val = n - offset!(4) as u64;
+            Vu64([
+                0x10 | ((val >> 24) as u8),
+                val as u8,
+                (val >> 8) as u8,
+                (val >> 16) as u8,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+        } else if n < offset!(6) {
+            // len=5: 4 data bytes
+            let val = n - offset!(5);
+            Vu64([
+                0x08 | ((val >> 32) as u8),
+                val as u8,
+                (val >> 8) as u8,
+                (val >> 16) as u8,
+                (val >> 24) as u8,
+                0,
+                0,
+                0,
+                0,
+            ])
+        } else if n < offset!(7) {
+            // len=6: 5 data bytes
+            let val = n - offset!(6);
+            Vu64([
+                0x04 | ((val >> 40) as u8),
+                val as u8,
+                (val >> 8) as u8,
+                (val >> 16) as u8,
+                (val >> 24) as u8,
+                (val >> 32) as u8,
+                0,
+                0,
+                0,
+            ])
+        } else if n < offset!(8) {
+            // len=7: 6 data bytes
+            let val = n - offset!(7);
+            Vu64([
+                0x02 | ((val >> 48) as u8),
+                val as u8,
+                (val >> 8) as u8,
+                (val >> 16) as u8,
+                (val >> 24) as u8,
+                (val >> 32) as u8,
+                (val >> 40) as u8,
+                0,
+                0,
+            ])
+        } else if n < offset!(9) {
+            // len=8: 7 data bytes
+            let val = n - offset!(8);
+            Vu64([
+                0x01,
+                val as u8,
+                (val >> 8) as u8,
+                (val >> 16) as u8,
+                (val >> 24) as u8,
+                (val >> 32) as u8,
+                (val >> 40) as u8,
+                (val >> 48) as u8,
+                0,
+            ])
+        } else {
+            // len=9: 8 data bytes
+            let val = n - offset!(9);
+            Vu64([
+                0x00,
+                val as u8,
+                (val >> 8) as u8,
+                (val >> 16) as u8,
+                (val >> 24) as u8,
+                (val >> 32) as u8,
+                (val >> 40) as u8,
+                (val >> 48) as u8,
+                (val >> 56) as u8,
+            ])
+        }
     }
 }
 
@@ -593,50 +581,57 @@ pub fn decode_vu64_slice(data: &[u8]) -> (u64, usize) {
     const OFFSET8: u64 = 0x0002_0408_1020_4080;
     const OFFSET9: u64 = 0x0102_0408_1020_4080;
 
+    // Masks for 40, 48, 56 bits (can't fit in 32-bit immediate)
+    const MASK40: u64 = 0xFF_FFFF_FFFF;
+    const MASK48: u64 = 0xFFFF_FFFF_FFFF;
+    const MASK56: u64 = 0xFF_FFFF_FFFF_FFFF;
+
     // SAFETY: We've verified data is not empty. Bounds checked after decode.
     unsafe {
         core::arch::asm!(
-            // Load prefix byte and compute jump index
+            // Load prefix byte
             "movzx  {prefix:e}, byte ptr [{ptr}]",
+
+            // LZCNT dispatch for all lengths (1-9) - mirrors ARM CLZ
             "lzcnt  {idx:e}, {prefix:e}",
             "sub    {idx:e}, 24",              // idx = 0-8 for len 1-9
             "lea    {len:e}, [{idx:e} + 1]",   // len = idx + 1 = 1-9
 
-            // Computed jump: 64-byte aligned handlers
-            "shl    {idx:e}, 6",               // idx * 64
+            // Computed jump: each handler is 32 bytes (like ARM)
             "lea    {jump:r}, [rip + 1f]",
+            "shl    {idx:e}, 5",               // idx * 32
             "add    {jump:r}, {idx:r}",
             "jmp    {jump:r}",
 
-            // Handler table - each handler padded to 64 bytes
-            ".p2align 6",
+            // Handler table - each handler is exactly 32 bytes
+            ".p2align 5",
             "1:",
 
-            // len=1 (idx=0): value = prefix & 0x7F
+            // len=1: value = prefix & 0x7F
             "and    {prefix:r}, 0x7F",
             "mov    {out:r}, {prefix:r}",
             "jmp    99f",
-            ".p2align 6",
+            "nop", "nop", "nop", "nop", "nop",
 
-            // len=2 (idx=64): value = ((prefix & 0x3F) << 8) | data[1] + offset
+            // len=2: load 1 byte, combine with prefix bits, add offset
             "movzx  {out:e}, byte ptr [{ptr} + 1]",
             "and    {prefix:e}, 0x3F",
             "shl    {prefix:r}, 8",
             "or     {out:r}, {prefix:r}",
             "add    {out:r}, {off2:r}",
             "jmp    99f",
-            ".p2align 6",
+            "nop", "nop",
 
-            // len=3 (idx=128): 2 data bytes
+            // len=3: load 2 bytes (word), combine with prefix bits, add offset
             "movzx  {out:e}, word ptr [{ptr} + 1]",
             "and    {prefix:e}, 0x1F",
             "shl    {prefix:r}, 16",
             "or     {out:r}, {prefix:r}",
             "add    {out:r}, {off3:r}",
             "jmp    99f",
-            ".p2align 6",
+            "nop", "nop",
 
-            // len=4 (idx=192): 3 data bytes
+            // len=4: load 4 bytes, mask to 24 bits, combine, add offset
             "mov    {out:e}, dword ptr [{ptr} + 1]",
             "and    {out:r}, 0xFFFFFF",
             "and    {prefix:e}, 0x0F",
@@ -644,54 +639,49 @@ pub fn decode_vu64_slice(data: &[u8]) -> (u64, usize) {
             "or     {out:r}, {prefix:r}",
             "add    {out:r}, {off4:r}",
             "jmp    99f",
-            ".p2align 6",
+            "nop",
 
-            // len=5 (idx=256): 4 data bytes
+            // len=5: load 4 bytes, combine with prefix bits, add offset
             "mov    {out:e}, dword ptr [{ptr} + 1]",
             "and    {prefix:e}, 0x07",
             "shl    {prefix:r}, 32",
             "or     {out:r}, {prefix:r}",
             "add    {out:r}, {off5:r}",
             "jmp    99f",
-            ".p2align 6",
+            "nop", "nop",
 
-            // len=6 (idx=320): 5 data bytes (4 + 1 to avoid movabs mask)
-            "mov    {out:e}, dword ptr [{ptr} + 1]",
-            "movzx  {tmp:e}, byte ptr [{ptr} + 5]",
-            "shl    {tmp:r}, 32",
-            "or     {out:r}, {tmp:r}",
+            // len=6: load 8 bytes, mask to 40 bits, combine, add offset
+            "mov    {out:r}, qword ptr [{ptr} + 1]",
+            "and    {out:r}, {mask40:r}",
             "and    {prefix:e}, 0x03",
             "shl    {prefix:r}, 40",
             "or     {out:r}, {prefix:r}",
             "add    {out:r}, {off6:r}",
             "jmp    99f",
-            ".p2align 6",
+            "nop",
 
-            // len=7 (idx=384): 6 data bytes (4 + 2 to avoid movabs mask)
-            "mov    {out:e}, dword ptr [{ptr} + 1]",
-            "movzx  {tmp:e}, word ptr [{ptr} + 5]",
-            "shl    {tmp:r}, 32",
-            "or     {out:r}, {tmp:r}",
+            // len=7: load 8 bytes, mask to 48 bits, combine, add offset
+            "mov    {out:r}, qword ptr [{ptr} + 1]",
+            "and    {out:r}, {mask48:r}",
             "and    {prefix:e}, 0x01",
             "shl    {prefix:r}, 48",
             "or     {out:r}, {prefix:r}",
             "add    {out:r}, {off7:r}",
             "jmp    99f",
-            ".p2align 6",
+            "nop",
 
-            // len=8 (idx=448): 7 data bytes (4 + 3 to avoid movabs mask)
-            "mov    {out:e}, dword ptr [{ptr} + 1]",
-            "mov    {tmp:e}, dword ptr [{ptr} + 5]",
-            "and    {tmp:r}, 0xFFFFFF",
-            "shl    {tmp:r}, 32",
-            "or     {out:r}, {tmp:r}",
+            // len=8: load 8 bytes, mask to 56 bits, add offset
+            "mov    {out:r}, qword ptr [{ptr} + 1]",
+            "and    {out:r}, {mask56:r}",
             "add    {out:r}, {off8:r}",
             "jmp    99f",
-            ".p2align 6",
+            "nop", "nop", "nop", "nop",
 
-            // len=9 (idx=512): 8 data bytes
+            // len=9: load 8 bytes, add offset
             "mov    {out:r}, qword ptr [{ptr} + 1]",
             "add    {out:r}, {off9:r}",
+            "jmp    99f",
+            "nop", "nop", "nop", "nop", "nop",
 
             "99:",
 
@@ -704,10 +694,12 @@ pub fn decode_vu64_slice(data: &[u8]) -> (u64, usize) {
             off7 = in(reg) OFFSET7,
             off8 = in(reg) OFFSET8,
             off9 = in(reg) OFFSET9,
+            mask40 = in(reg) MASK40,
+            mask48 = in(reg) MASK48,
+            mask56 = in(reg) MASK56,
             prefix = out(reg) _,
             out = out(reg) value,
             len = out(reg) len,
-            tmp = out(reg) _,
             jump = out(reg) _,
             idx = out(reg) _,
             options(pure, readonly, nostack),

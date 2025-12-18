@@ -30,7 +30,7 @@ pub const fn zigzag_decode_i64(n: u64) -> i64 {
 /// Writes directly to output buffer.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
-fn encode_vi64_asm(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
+fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
@@ -175,20 +175,11 @@ fn encode_vi64_asm(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
     }
 }
 
-/// Encode a signed i64 using zigzag encoding to VLQ.
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-#[inline(always)]
-pub fn encode_vi64(n: i64) -> Vi64 {
-    let mut bytes = [0u8; VU64_BUF_SIZE];
-    encode_vi64_asm(n, &mut bytes);
-    Vi64(Vu64(bytes))
-}
-
 /// Fused zigzag + encode for i64 using x86_64 inline asm.
 /// Writes directly to output buffer.
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
-fn encode_vi64_asm_x86(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
+fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
@@ -328,22 +319,28 @@ fn encode_vi64_asm_x86(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
 }
 
 /// Encode a signed i64 using zigzag encoding to VLQ.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vi64(n: i64) -> Vi64 {
-    let mut bytes = [0u8; VU64_BUF_SIZE];
-    encode_vi64_asm_x86(n, &mut bytes);
-    Vi64(Vu64(bytes))
-}
+    #[cfg(any(
+        all(target_arch = "aarch64", feature = "asm"),
+        all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+    ))]
+    {
+        let mut bytes = core::mem::MaybeUninit::<[u8; VU64_BUF_SIZE]>::uninit();
+        // SAFETY: ASM writes 1 byte at offset 0 (prefix) and 8 bytes at offset 1 (data)
+        unsafe {
+            encode_vi64_impl(n, &mut *bytes.as_mut_ptr());
+            Vi64(Vu64(bytes.assume_init()))
+        }
+    }
 
-/// Encode a signed i64 using zigzag encoding to VLQ.
-#[cfg(not(any(
-    all(target_arch = "aarch64", feature = "asm"),
-    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
-)))]
-#[inline(always)]
-pub fn encode_vi64(n: i64) -> Vi64 {
-    Vi64(encode_vu64(zigzag_encode_i64(n)))
+    #[cfg(not(any(
+        all(target_arch = "aarch64", feature = "asm"),
+        all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+    )))]
+    {
+        Vi64(encode_vu64(zigzag_encode_i64(n)))
+    }
 }
 
 /// Decode a Vi64 back to a native i64.

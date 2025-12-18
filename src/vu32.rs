@@ -21,7 +21,7 @@ pub(crate) const fn decode_len_vu32(n: u8) -> u8 {
 /// Writes directly to output buffer.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
-fn encode_vu32_asm(n: u32, out: &mut [u8; VU32_BUF_SIZE]) {
+fn encode_vu32_impl(n: u32, out: &mut [u8; VU32_BUF_SIZE]) {
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
@@ -94,20 +94,11 @@ fn encode_vu32_asm(n: u32, out: &mut [u8; VU32_BUF_SIZE]) {
     }
 }
 
-/// Encode a u32 in VLQ format.
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-#[inline(always)]
-pub fn encode_vu32(n: u32) -> Vu32 {
-    let mut bytes = [0u8; VU32_BUF_SIZE];
-    encode_vu32_asm(n, &mut bytes);
-    Vu32(bytes)
-}
-
 /// Encode a u32 in VLQ format using x86_64 inline asm.
 /// Writes directly to output buffer.
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
-fn encode_vu32_asm_x86(n: u32, out: &mut [u8; VU32_BUF_SIZE]) {
+fn encode_vu32_impl(n: u32, out: &mut [u8; VU32_BUF_SIZE]) {
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
@@ -178,128 +169,133 @@ fn encode_vu32_asm_x86(n: u32, out: &mut [u8; VU32_BUF_SIZE]) {
 }
 
 /// Encode a u32 in VLQ format.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vu32(n: u32) -> Vu32 {
-    let mut bytes = [0u8; VU32_BUF_SIZE];
-    encode_vu32_asm_x86(n, &mut bytes);
-    Vu32(bytes)
-}
+    #[cfg(any(
+        all(target_arch = "aarch64", feature = "asm"),
+        all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+    ))]
+    {
+        let mut bytes = core::mem::MaybeUninit::<[u8; VU32_BUF_SIZE]>::uninit();
+        // SAFETY: ASM writes 1 byte at offset 0 (prefix) and 4 bytes at offset 1 (data)
+        unsafe {
+            encode_vu32_impl(n, &mut *bytes.as_mut_ptr());
+            Vu32(bytes.assume_init())
+        }
+    }
 
-/// Encode a u32 in VLQ format.
-#[cfg(not(any(
-    all(target_arch = "aarch64", feature = "asm"),
-    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
-)))]
-#[inline(always)]
-pub const fn encode_vu32(n: u32) -> Vu32 {
-    let n64 = n as u64;
+    #[cfg(not(any(
+        all(target_arch = "aarch64", feature = "asm"),
+        all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+    )))]
+    {
+        let n64 = n as u64;
 
-    if n64 < offset!(2) as u64 {
-        // len=1: all data in prefix
-        Vu32([0x80 | (n as u8), 0, 0, 0, 0])
-    } else if n64 < offset!(3) as u64 {
-        // len=2: 1 data byte
-        let val = n64 - offset!(2) as u64;
-        Vu32([0x40 | ((val >> 8) as u8), val as u8, 0, 0, 0])
-    } else if n64 < offset!(4) as u64 {
-        // len=3: 2 data bytes
-        let val = n64 - offset!(3) as u64;
-        Vu32([
-            0x20 | ((val >> 16) as u8),
-            val as u8,
-            (val >> 8) as u8,
-            0,
-            0,
-        ])
-    } else if n64 < offset!(5) {
-        // len=4: 3 data bytes
-        let val = n64 - offset!(4) as u64;
-        Vu32([
-            0x10 | ((val >> 24) as u8),
-            val as u8,
-            (val >> 8) as u8,
-            (val >> 16) as u8,
-            0,
-        ])
-    } else {
-        // len=5: 4 data bytes
-        let val = n64 - offset!(5);
-        Vu32([
-            0x08 | ((val >> 32) as u8),
-            val as u8,
-            (val >> 8) as u8,
-            (val >> 16) as u8,
-            (val >> 24) as u8,
-        ])
+        if n64 < offset!(2) as u64 {
+            // len=1: all data in prefix
+            Vu32([0x80 | (n as u8), 0, 0, 0, 0])
+        } else if n64 < offset!(3) as u64 {
+            // len=2: 1 data byte
+            let val = n64 - offset!(2) as u64;
+            Vu32([0x40 | ((val >> 8) as u8), val as u8, 0, 0, 0])
+        } else if n64 < offset!(4) as u64 {
+            // len=3: 2 data bytes
+            let val = n64 - offset!(3) as u64;
+            Vu32([
+                0x20 | ((val >> 16) as u8),
+                val as u8,
+                (val >> 8) as u8,
+                0,
+                0,
+            ])
+        } else if n64 < offset!(5) {
+            // len=4: 3 data bytes
+            let val = n64 - offset!(4) as u64;
+            Vu32([
+                0x10 | ((val >> 24) as u8),
+                val as u8,
+                (val >> 8) as u8,
+                (val >> 16) as u8,
+                0,
+            ])
+        } else {
+            // len=5: 4 data bytes
+            let val = n64 - offset!(5);
+            Vu32([
+                0x08 | ((val >> 32) as u8),
+                val as u8,
+                (val >> 8) as u8,
+                (val >> 16) as u8,
+                (val >> 24) as u8,
+            ])
+        }
     }
 }
 
-/// Decode a u32 from a byte slice by delegating to the u64 decoder.
+/// Decode a u32 from a byte slice.
 /// Returns (0, 0) for empty or invalid input.
-#[cfg(any(
-    all(target_arch = "aarch64", feature = "asm"),
-    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
-))]
 #[inline(always)]
 pub fn decode_vu32_slice(data: &[u8]) -> (u32, usize) {
-    let (value, len) = decode_vu64_slice(data);
-    (value as u32, len)
-}
-
-/// Decode a u32 from a byte slice (fallback for no asm feature).
-/// Returns (0, 0) for empty or invalid input.
-#[cfg(not(any(
-    all(target_arch = "aarch64", feature = "asm"),
-    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
-)))]
-#[inline(always)]
-pub fn decode_vu32_slice(data: &[u8]) -> (u32, usize) {
-    let Some(&p) = data.first() else {
-        return (0, 0);
-    };
-
-    // len=1: prefix >= 0x80 (1xxx_xxxx)
-    if p >= 0x80 {
-        return ((p & 0x7F) as u32, 1);
+    #[cfg(any(
+        all(target_arch = "aarch64", feature = "asm"),
+        all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+    ))]
+    {
+        let (value, len) = decode_vu64_slice(data);
+        (value as u32, len)
     }
 
-    // len=2: prefix >= 0x40 (01xx_xxxx)
-    if p >= 0x40 {
-        if data.len() < 2 {
+    #[cfg(not(any(
+        all(target_arch = "aarch64", feature = "asm"),
+        all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+    )))]
+    {
+        let Some(&p) = data.first() else {
+            return (0, 0);
+        };
+
+        // len=1: prefix >= 0x80 (1xxx_xxxx)
+        if p >= 0x80 {
+            return ((p & 0x7F) as u32, 1);
+        }
+
+        // len=2: prefix >= 0x40 (01xx_xxxx)
+        if p >= 0x40 {
+            if data.len() < 2 {
+                return (0, 0);
+            }
+            let raw = data[1] as u32;
+            return (((((p & 0x3F) as u32) << 8) | raw).wrapping_add(128), 2);
+        }
+
+        // len=3: prefix >= 0x20 (001x_xxxx)
+        if p >= 0x20 {
+            if data.len() < 3 {
+                return (0, 0);
+            }
+            let raw = u16::from_le_bytes([data[1], data[2]]) as u32;
+            return (((((p & 0x1F) as u32) << 16) | raw).wrapping_add(16512), 3);
+        }
+
+        // len=4: prefix >= 0x10 (0001_xxxx)
+        if p >= 0x10 {
+            if data.len() < 4 {
+                return (0, 0);
+            }
+            let raw = u32::from_le_bytes([data[1], data[2], data[3], 0]) & 0xFF_FFFF;
+            return (((((p & 0x0F) as u32) << 24) | raw).wrapping_add(2113664), 4);
+        }
+
+        // len=5: prefix >= 0x08 (0000_1xxx)
+        if data.len() < 5 {
             return (0, 0);
         }
-        let raw = data[1] as u32;
-        return (((((p & 0x3F) as u32) << 8) | raw).wrapping_add(128), 2);
+        let raw = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
+        (
+            ((((p & 0x07) as u64) << 32) | raw as u64).wrapping_add(270549120) as u32,
+            5,
+        )
     }
-
-    // len=3: prefix >= 0x20 (001x_xxxx)
-    if p >= 0x20 {
-        if data.len() < 3 {
-            return (0, 0);
-        }
-        let raw = u16::from_le_bytes([data[1], data[2]]) as u32;
-        return (((((p & 0x1F) as u32) << 16) | raw).wrapping_add(16512), 3);
-    }
-
-    // len=4: prefix >= 0x10 (0001_xxxx)
-    if p >= 0x10 {
-        if data.len() < 4 {
-            return (0, 0);
-        }
-        let raw = u32::from_le_bytes([data[1], data[2], data[3], 0]) & 0xFF_FFFF;
-        return (((((p & 0x0F) as u32) << 24) | raw).wrapping_add(2113664), 4);
-    }
-
-    // len=5: prefix >= 0x08 (0000_1xxx)
-    if data.len() < 5 {
-        return (0, 0);
-    }
-    let raw = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-    (
-        ((((p & 0x07) as u64) << 32) | raw as u64).wrapping_add(270549120) as u32,
-        5,
-    )
 }
 
 /// An unsigned 32-bit integer in variable-length quantity encoding.

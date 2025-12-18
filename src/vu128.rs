@@ -127,11 +127,13 @@ const fn encode_len_vu128(n: u128) -> u8 {
     18
 }
 
-/// Encode a u128 in VLQ format using aarch64 inline asm.
-/// Writes directly to output buffer.
+/// Encode a u128 in VLQ format using aarch64 inline asm with logarithm-based dispatch.
+/// Uses the formula: idx = (56 - clz(127*n + 128)) / 7 for low path.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 fn encode_vu128_asm(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
+    use crate::vu64::enc_offsets::*;
+
     let n_lo = n as u64;
     let n_hi = (n >> 64) as u64;
 
@@ -141,200 +143,93 @@ fn encode_vu128_asm(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
             // Check if high part is zero (fits in 64 bits)
             "cbnz   x1, 50f",
 
-            // === Low 64-bit path (lengths 1-9) ===
-            // Compare against thresholds
-            "cmp    x0, #128",
-            "b.lo   100f",
+            // === Low 64-bit path (lengths 1-10) ===
+            // Check if n >= OFF9 first
+            "cmp    x0, {off9}",
+            "b.hs   108f",
 
-            "mov    x4, #0x4080",
-            "cmp    x0, x4",
-            "b.lo   101f",
+            // Use logarithm formula for lengths 1-8
+            "mov    {tmp}, #127",
+            "mov    {idx}, #128",
+            "madd   {tmp}, x0, {tmp}, {idx}",   // tmp = 127*n + 128
+            "clz    {tmp}, {tmp}",
+            "mov    {idx}, #56",
+            "sub    {idx}, {idx}, {tmp}",       // idx = 56 - clz
+            "mov    {tmp}, #37",
+            "mul    {idx}, {idx}, {tmp}",
+            "lsr    {idx}, {idx}, #8",          // idx = (56-clz)/7
 
-            "mov    x4, #0x4080",
-            "movk   x4, #0x20, lsl #16",
-            "cmp    x0, x4",
-            "b.lo   102f",
+            // Computed branch (16-byte handlers)
+            "adr    {jump}, 100f",
+            "add    {jump}, {jump}, {idx}, lsl #4",
+            "br     {jump}",
 
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "cmp    x0, x4",
-            "b.lo   103f",
-
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "movk   x4, #0x8, lsl #32",
-            "cmp    x0, x4",
-            "b.lo   104f",
-
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "movk   x4, #0x408, lsl #32",
-            "cmp    x0, x4",
-            "b.lo   105f",
-
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "movk   x4, #0x0408, lsl #32",
-            "movk   x4, #0x0002, lsl #48",
-            "cmp    x0, x4",
-            "b.lo   106f",
-
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "movk   x4, #0x0408, lsl #32",
-            "movk   x4, #0x0102, lsl #48",
-            "cmp    x0, x4",
-            "b.lo   107f",
-
-            // Check for 9-byte encoding (second byte >= 0x80)
-            // 9-byte range: offset!(9) + (1<<63) to offset!(9) + (1<<64)-1
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "movk   x4, #0x0408, lsl #32",
-            "movk   x4, #0x8102, lsl #48",  // offset!(9) + (1<<63)
-            "cmp    x0, x4",
-            "b.lo   110f",  // < 9-byte min, use 10-byte
-
-            // len=9: offset = 0x0102_0408_1020_4080
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "movk   x4, #0x0408, lsl #32",
-            "movk   x4, #0x0102, lsl #48",
-            "sub    x2, x0, x4",
-            "mov    x5, #0x00",  // prefix1
-            "lsr    x6, x2, #56",  // prefix2 = high byte of value
-            "and    x2, x2, #0x00FFFFFFFFFFFFFF",  // data_lo = low 56 bits
-            "mov    x3, #0",  // data_hi
-            "b      200f",
-
-            // len=1: n < 128
+            // Handler table - each handler is exactly 16 bytes (4 instructions)
+            ".p2align 4",
             "100:",
-            "orr    x5, x0, #0x80",
-            "mov    x6, #0",
-            "mov    x2, #0",
-            "mov    x3, #0",
-            "b      200f",
 
-            // len=2: offset = 128
-            "101:",
-            "sub    x2, x0, #128",
+            // idx=0 (len=1): n < 128
+            "orr    x5, x0, #0x80",
+            "mov    x2, #0",
+            "b      200f",
+            "nop",
+
+            // idx=1 (len=2): 128 <= n < 16512
+            "sub    x2, x0, {off2}",
             "lsr    x5, x2, #8",
             "orr    x5, x5, #0x40",
-            "mov    x6, #0",
-            "and    x2, x2, #0xFF",
-            "mov    x3, #0",
             "b      200f",
 
-            // len=3: offset = 16512
-            "102:",
-            "mov    x4, #0x4080",
-            "sub    x2, x0, x4",
+            // idx=2 (len=3): 16512 <= n < 2113664
+            "sub    x2, x0, {off3}",
             "lsr    x5, x2, #16",
             "orr    x5, x5, #0x20",
-            "mov    x6, #0",
-            "and    x2, x2, #0xFFFF",
-            "mov    x3, #0",
             "b      200f",
 
-            // len=4: offset = 2113664
-            "103:",
-            "mov    x4, #0x4080",
-            "movk   x4, #0x20, lsl #16",
-            "sub    x2, x0, x4",
+            // idx=3 (len=4): 2113664 <= n < 270549120
+            "sub    x2, x0, {off4}",
             "lsr    x5, x2, #24",
             "orr    x5, x5, #0x10",
-            "mov    x6, #0",
-            "ubfx   x2, x2, #0, #24",
-            "mov    x3, #0",
             "b      200f",
 
-            // len=5: offset = 270549120
-            "104:",
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "sub    x2, x0, x4",
+            // idx=4 (len=5): 270549120 <= n < 34630287488
+            "sub    x2, x0, {off5}",
             "lsr    x5, x2, #32",
             "orr    x5, x5, #0x08",
-            "mov    x6, #0",
-            "and    x2, x2, #0xFFFFFFFF",
-            "mov    x3, #0",
             "b      200f",
 
-            // len=6: offset = 34630287488
-            "105:",
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "movk   x4, #0x8, lsl #32",
-            "sub    x2, x0, x4",
+            // idx=5 (len=6): 34630287488 <= n < 4432676798592
+            "sub    x2, x0, {off6}",
             "lsr    x5, x2, #40",
             "orr    x5, x5, #0x04",
-            "mov    x6, #0",
-            "mov    x7, #0xFFFFFFFFFF",
-            "and    x2, x2, x7",
-            "mov    x3, #0",
             "b      200f",
 
-            // len=7: offset = 4432676798592
-            "106:",
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "movk   x4, #0x408, lsl #32",
-            "sub    x2, x0, x4",
+            // idx=6 (len=7): 4432676798592 <= n < 567382630219904
+            "sub    x2, x0, {off7}",
             "lsr    x5, x2, #48",
             "orr    x5, x5, #0x02",
-            "mov    x6, #0",
-            "mov    x7, #0xFFFFFFFFFFFF",
-            "and    x2, x2, x7",
-            "mov    x3, #0",
             "b      200f",
 
-            // len=8: offset = 567382630219904
-            "107:",
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "movk   x4, #0x0408, lsl #32",
-            "movk   x4, #0x0002, lsl #48",
-            "sub    x2, x0, x4",
+            // idx=7 (len=8): 567382630219904 <= n < 72624976668147840
+            "sub    x2, x0, {off8}",
             "mov    x5, #0x01",
-            "mov    x6, #0",
-            "mov    x7, #0xFFFFFFFFFFFFFF",
-            "and    x2, x2, x7",
-            "mov    x3, #0",
             "b      200f",
+            "nop",
 
-            // len=10: value in gap between 8-byte max and 9-byte min
-            "110:",
-            // offset!(10) = offset!(9) + (1<<64) = 0x0102_0408_1020_4080 + 0x1_0000_0000_0000_0000
-            // Since n_hi is 0, we're just below offset!(9) + (1<<63)
-            // This means val = n - offset!(9) has high bit clear (< 0x8000_0000_0000_0000)
-            "mov    x4, #0x4080",
-            "movk   x4, #0x1020, lsl #16",
-            "movk   x4, #0x0408, lsl #32",
-            "movk   x4, #0x0102, lsl #48",
-            "sub    x2, x0, x4",  // val = n - offset!(9), but we need n - offset!(10)
-            // offset!(10) - offset!(9) = 1 << 64, but since n < offset!(10), we have:
-            // val_for_10 = n - offset!(10) is negative, which is wrong
-            // Actually these values need 10-byte encoding because n - offset!(9) < (1<<63)
-            // For 10-byte: prefix1=0, prefix2=0x40|(val>>64), data=val&((1<<64)-1)
-            // But since n_hi=0 and n-offset!(9) < (1<<63), we encode differently
-            // val = n - offset!(10) would be negative, so we need to handle this
-            // Actually: these values are in [offset!(9), offset!(9)+(1<<63))
-            // We need: prefix1=0, prefix2=0x40|(val_hi), data_lo=val_lo
-            // where val = n - offset!(10) = n - offset!(9) - (1<<64)
-            // Since n_hi=0 and n < offset!(10), we have n_hi_after_sub = -1 (borrow)
-            // Let's compute properly
-            "subs   x2, x0, x4",  // val_lo = n_lo - offset!(9)_lo, sets carry if borrow
-            // val = n - offset!(9), which has val_hi = -carry (either 0 or -1)
-            // For offset!(10) = offset!(9) + (1<<64):
-            // val_10 = n - offset!(10) = val - (1<<64)
-            // val_10_lo = val_lo, val_10_hi = val_hi - 1 = -carry - 1 = -(1+carry)
-            // But we know n is in [offset!(9), offset!(9)+(1<<63)), so val is in [0, 1<<63)
-            // val_hi = 0, val_10_hi = -1 (wrapping)
-            // This is getting complex. Let's use the pure Rust path for extended encodings
+            // len=9 or len=10: n >= OFF9, n_hi == 0
+            "108:",
+            // Check if val >= 2^63 (9-byte) or < 2^63 (10-byte gap)
+            "sub    x2, x0, {off9}",
+            "tbnz   x2, #63, 109f",
+            // 10-byte gap: val < 2^63
             "mov    x5, #0",
-            "mov    x6, #0x40",
-            "orr    x6, x6, x2, lsr #56",
-            "and    x2, x2, #0x00FFFFFFFFFFFFFF",
+            "lsr    x6, x2, #58",
+            "orr    x6, x6, #0x40",
+            "b      200f",
+            // 9-byte: val >= 2^63
+            "109:",
+            "mov    x5, #0x00",
+            "lsr    x6, x2, #56",
             "mov    x3, #0",
             "b      200f",
 
@@ -589,6 +484,17 @@ fn encode_vu128_asm(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
             out("x6") _,
             out("x7") _,
             out = in(reg) out.as_mut_ptr(),
+            off2 = in(reg) OFF2,
+            off3 = in(reg) OFF3,
+            off4 = in(reg) OFF4,
+            off5 = in(reg) OFF5,
+            off6 = in(reg) OFF6,
+            off7 = in(reg) OFF7,
+            off8 = in(reg) OFF8,
+            off9 = in(reg) OFF9,
+            tmp = out(reg) _,
+            idx = out(reg) _,
+            jump = out(reg) _,
             options(nostack),
         );
     }
@@ -598,9 +504,12 @@ fn encode_vu128_asm(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vu128(n: u128) -> Vu128 {
-    let mut bytes = [0u8; VU128_BUF_SIZE];
-    encode_vu128_asm(n, &mut bytes);
-    Vu128(bytes)
+    let mut bytes = core::mem::MaybeUninit::<[u8; VU128_BUF_SIZE]>::uninit();
+    // SAFETY: ASM writes all 18 bytes
+    unsafe {
+        encode_vu128_asm(n, &mut *bytes.as_mut_ptr());
+        Vu128(bytes.assume_init())
+    }
 }
 
 /// Encode a u128 in VLQ format using x86_64 inline asm.
@@ -964,9 +873,12 @@ fn encode_vu128_asm_x86(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vu128(n: u128) -> Vu128 {
-    let mut bytes = [0u8; VU128_BUF_SIZE];
-    encode_vu128_asm_x86(n, &mut bytes);
-    Vu128(bytes)
+    let mut bytes = core::mem::MaybeUninit::<[u8; VU128_BUF_SIZE]>::uninit();
+    // SAFETY: ASM writes all 18 bytes
+    unsafe {
+        encode_vu128_asm_x86(n, &mut *bytes.as_mut_ptr());
+        Vu128(bytes.assume_init())
+    }
 }
 
 /// Encode a u128 in VLQ format (fallback).
@@ -1440,6 +1352,18 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
     const OFFSET7: u64 = 0x0408_1020_4080;
     const OFFSET8: u64 = 0x0002_0408_1020_4080;
     const OFFSET9: u64 = 0x0102_0408_1020_4080;
+    // High parts for extended format (len 10-16)
+    const OFFSET10_HI: u64 = 1;
+    const OFFSET11_HI: u64 = 0x41;
+    const OFFSET12_HI: u64 = 0x2041;
+    const OFFSET13_HI: u64 = 0x10_2041;
+    const OFFSET14_HI: u64 = 0x0810_2041;
+    const OFFSET15_HI: u64 = 0x0004_0810_2041;
+    const OFFSET16_HI: u64 = 0x0204_0810_2041;
+    // Masks
+    const MASK40: u64 = 0xFF_FFFF_FFFF;
+    const MASK48: u64 = 0xFFFF_FFFF_FFFF;
+    const MASK56: u64 = 0xFF_FFFF_FFFF_FFFF;
 
     // SAFETY: We've verified data is not empty. Bounds checked after decode.
     unsafe {
@@ -1452,25 +1376,24 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "jz     200f",
 
             // Standard format: LZCNT dispatch for len 1-8
-            "lzcnt  {len:e}, {p1:e}",
-            "sub    {len:e}, 23",              // len=1->1, ..., len=8->8
+            "lzcnt  {idx:e}, {p1:e}",
+            "sub    {idx:e}, 24",              // idx = 0-7 for len 1-8
+            "lea    {len:e}, [{idx:e} + 1]",   // len = 1-8
 
-            // Computed jump: 64-byte aligned handlers
+            // Computed jump: 32-byte handlers
             "lea    {jump:r}, [rip + 1f]",
-            "mov    {idx:e}, {len:e}",
-            "sub    {idx:e}, 1",
-            "shl    {idx:e}, 6",               // multiply by 64
+            "shl    {idx:e}, 5",               // multiply by 32
             "add    {jump:r}, {idx:r}",
             "jmp    {jump:r}",
 
-            // len=1 handler (64 bytes)
-            ".p2align 6",
+            // len=1 handler (32 bytes)
+            ".p2align 5",
             "1:",
             "and    {p1:r}, 0x7F",
             "mov    {out_lo:r}, {p1:r}",
             "xor    {out_hi:e}, {out_hi:e}",
             "jmp    100f",
-            ".p2align 6",
+            "nop", "nop", "nop", "nop",
 
             // len=2: 1 data byte
             "movzx  {out_lo:e}, byte ptr [{ptr} + 1]",
@@ -1480,7 +1403,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off2:r}",
             "xor    {out_hi:e}, {out_hi:e}",
             "jmp    100f",
-            ".p2align 6",
+            "nop",
 
             // len=3: 2 data bytes
             "movzx  {out_lo:e}, word ptr [{ptr} + 1]",
@@ -1490,7 +1413,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off3:r}",
             "xor    {out_hi:e}, {out_hi:e}",
             "jmp    100f",
-            ".p2align 6",
+            "nop",
 
             // len=4: 3 data bytes
             "mov    {out_lo:e}, dword ptr [{ptr} + 1]",
@@ -1501,7 +1424,6 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off4:r}",
             "xor    {out_hi:e}, {out_hi:e}",
             "jmp    100f",
-            ".p2align 6",
 
             // len=5: 4 data bytes
             "mov    {out_lo:e}, dword ptr [{ptr} + 1]",
@@ -1511,46 +1433,156 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off5:r}",
             "xor    {out_hi:e}, {out_hi:e}",
             "jmp    100f",
-            ".p2align 6",
+            "nop", "nop",
 
             // len=6: 5 data bytes
             "mov    {out_lo:r}, qword ptr [{ptr} + 1]",
-            "mov    {tmp:r}, 0xFF_FFFF_FFFF",
-            "and    {out_lo:r}, {tmp:r}",
+            "and    {out_lo:r}, {mask40:r}",
             "and    {p1:e}, 0x03",
             "shl    {p1:r}, 40",
             "or     {out_lo:r}, {p1:r}",
             "add    {out_lo:r}, {off6:r}",
             "xor    {out_hi:e}, {out_hi:e}",
             "jmp    100f",
-            ".p2align 6",
 
             // len=7: 6 data bytes
             "mov    {out_lo:r}, qword ptr [{ptr} + 1]",
-            "mov    {tmp:r}, 0xFFFF_FFFF_FFFF",
-            "and    {out_lo:r}, {tmp:r}",
+            "and    {out_lo:r}, {mask48:r}",
             "and    {p1:e}, 0x01",
             "shl    {p1:r}, 48",
             "or     {out_lo:r}, {p1:r}",
             "add    {out_lo:r}, {off7:r}",
             "xor    {out_hi:e}, {out_hi:e}",
             "jmp    100f",
-            ".p2align 6",
 
             // len=8: 7 data bytes
             "mov    {out_lo:r}, qword ptr [{ptr} + 1]",
-            "mov    {tmp:r}, 0xFF_FFFF_FFFF_FFFF",
-            "and    {out_lo:r}, {tmp:r}",
+            "and    {out_lo:r}, {mask56:r}",
             "add    {out_lo:r}, {off8:r}",
             "xor    {out_hi:e}, {out_hi:e}",
             "jmp    100f",
-            ".p2align 6",
+            "nop", "nop", "nop",
 
-            // Extended format placeholder - set len=0 to signal fallback needed
+            // === Extended format (p1 == 0) ===
             "200:",
-            "xor    {out_lo:e}, {out_lo:e}",
-            "xor    {out_hi:e}, {out_hi:e}",
-            "xor    {len:e}, {len:e}",
+            "movzx  {p2:e}, byte ptr [{ptr} + 1]",
+
+            // Check for len=9 (p2 >= 0x80)
+            "cmp    {p2:e}, 0x80",
+            "jae    209f",
+
+            // Check for len=18 (p2 == 0)
+            "test   {p2:e}, {p2:e}",
+            "jz     218f",
+
+            // Extended len 10-16: LZCNT on p2
+            "lzcnt  {idx:e}, {p2:e}",
+            "sub    {idx:e}, 25",              // 0 for len=10, ..., 6 for len=16
+
+            // Computed jump for extended handlers (32 bytes each)
+            "lea    {jump:r}, [rip + 210f]",
+            "mov    {len:e}, {idx:e}",
+            "add    {len:e}, 10",              // len = idx + 10 = 10-16
+            "shl    {idx:e}, 5",
+            "add    {jump:r}, {idx:r}",
+            "jmp    {jump:r}",
+
+            // len=10: 8 data bytes, p2 mask 0x3F
+            ".p2align 5",
+            "210:",
+            "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
+            "and    {p2:e}, 0x3F",
+            "mov    {out_hi:r}, {p2:r}",
+            "add    {out_lo:r}, {off9:r}",
+            "adc    {out_hi:r}, {off10_hi:r}",
+            "mov    {len:e}, 10",
+            "jmp    100f",
+            "nop",
+
+            // len=11: 9 data bytes
+            "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
+            "movzx  {out_hi:e}, byte ptr [{ptr} + 10]",
+            "and    {p2:e}, 0x1F",
+            "shl    {p2:r}, 8",
+            "or     {out_hi:r}, {p2:r}",
+            "add    {out_lo:r}, {off9:r}",
+            "adc    {out_hi:r}, {off11_hi:r}",
+            "mov    {len:e}, 11",
+            "jmp    100f",
+
+            // len=12: 10 data bytes
+            "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
+            "movzx  {out_hi:e}, word ptr [{ptr} + 10]",
+            "and    {p2:e}, 0x0F",
+            "shl    {p2:r}, 16",
+            "or     {out_hi:r}, {p2:r}",
+            "add    {out_lo:r}, {off9:r}",
+            "adc    {out_hi:r}, {off12_hi:r}",
+            "mov    {len:e}, 12",
+            "jmp    100f",
+
+            // len=13: 11 data bytes
+            "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
+            "mov    {out_hi:e}, dword ptr [{ptr} + 10]",
+            "and    {out_hi:r}, 0xFFFFFF",
+            "and    {p2:e}, 0x07",
+            "shl    {p2:r}, 24",
+            "or     {out_hi:r}, {p2:r}",
+            "add    {out_lo:r}, {off9:r}",
+            "adc    {out_hi:r}, {off13_hi:r}",
+            "mov    {len:e}, 13",
+            "jmp    100f",
+
+            // len=14: 12 data bytes
+            "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
+            "mov    {out_hi:e}, dword ptr [{ptr} + 10]",
+            "and    {p2:e}, 0x03",
+            "shl    {p2:r}, 32",
+            "or     {out_hi:r}, {p2:r}",
+            "add    {out_lo:r}, {off9:r}",
+            "adc    {out_hi:r}, {off14_hi:r}",
+            "mov    {len:e}, 14",
+            "jmp    100f",
+
+            // len=15: 13 data bytes
+            "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
+            "mov    {out_hi:r}, qword ptr [{ptr} + 10]",
+            "and    {out_hi:r}, {mask40:r}",
+            "and    {p2:e}, 0x01",
+            "shl    {p2:r}, 40",
+            "or     {out_hi:r}, {p2:r}",
+            "add    {out_lo:r}, {off9:r}",
+            "adc    {out_hi:r}, {off15_hi:r}",
+            "mov    {len:e}, 15",
+            "jmp    100f",
+
+            // len=16: 14 data bytes
+            "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
+            "mov    {out_hi:r}, qword ptr [{ptr} + 10]",
+            "and    {out_hi:r}, {mask48:r}",
+            "add    {out_lo:r}, {off9:r}",
+            "adc    {out_hi:r}, {off16_hi:r}",
+            "mov    {len:e}, 16",
+            "jmp    100f",
+            "nop", "nop",
+
+            // len=9: p2 >= 0x80
+            "209:",
+            "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
+            "and    {out_lo:r}, {mask56:r}",
+            "shl    {p2:r}, 56",
+            "or     {out_lo:r}, {p2:r}",
+            "add    {out_lo:r}, {off9:r}",
+            "mov    {out_hi:e}, 0",
+            "adc    {out_hi:r}, 0",
+            "mov    {len:e}, 9",
+            "jmp    100f",
+
+            // len=18: raw 128-bit (p2 == 0)
+            "218:",
+            "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
+            "mov    {out_hi:r}, qword ptr [{ptr} + 10]",
+            "mov    {len:e}, 18",
 
             "100:",
 
@@ -1562,20 +1594,26 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             off6 = in(reg) OFFSET6,
             off7 = in(reg) OFFSET7,
             off8 = in(reg) OFFSET8,
+            off9 = in(reg) OFFSET9,
+            off10_hi = in(reg) OFFSET10_HI,
+            off11_hi = in(reg) OFFSET11_HI,
+            off12_hi = in(reg) OFFSET12_HI,
+            off13_hi = in(reg) OFFSET13_HI,
+            off14_hi = in(reg) OFFSET14_HI,
+            off15_hi = in(reg) OFFSET15_HI,
+            off16_hi = in(reg) OFFSET16_HI,
+            mask40 = in(reg) MASK40,
+            mask48 = in(reg) MASK48,
+            mask56 = in(reg) MASK56,
             p1 = out(reg) _,
+            p2 = out(reg) _,
             out_lo = out(reg) value_lo,
             out_hi = out(reg) value_hi,
             len = out(reg) len,
-            tmp = out(reg) _,
             jump = out(reg) _,
             idx = out(reg) _,
             options(pure, readonly, nostack),
         );
-    }
-
-    // Handle extended format in Rust (len 9-18) when asm returns len=0
-    if len == 0 {
-        return decode_vu128_slice_extended(data);
     }
 
     // Bounds check after decode
@@ -1584,127 +1622,6 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
     }
 
     (((value_hi as u128) << 64) | (value_lo as u128), len)
-}
-
-/// Handle extended format (p1 == 0) for u128 decode on x86_64.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
-#[inline(always)]
-fn decode_vu128_slice_extended(data: &[u8]) -> (u128, usize) {
-    let Some(&p2) = data.get(1) else {
-        return (0, 0);
-    };
-
-    // len=9: p2 >= 0x80
-    if p2 >= 0x80 {
-        if data.len() < 9 {
-            return (0, 0);
-        }
-        let raw = u64::from_le_bytes([
-            data[2], data[3], data[4], data[5], data[6], data[7], data[8], 0,
-        ]) as u128
-            & 0xFF_FFFF_FFFF_FFFF;
-        let prefix_bits = (p2 as u128) << 56;
-        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[9]), 9);
-    }
-
-    // len=10: p2 >= 0x40
-    if p2 >= 0x40 {
-        if data.len() < 10 {
-            return (0, 0);
-        }
-        let raw = u64::from_le_bytes([
-            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
-        ]) as u128;
-        let prefix_bits = ((p2 & 0x3F) as u128) << 64;
-        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[10]), 10);
-    }
-
-    // len=11: p2 >= 0x20
-    if p2 >= 0x20 {
-        if data.len() < 11 {
-            return (0, 0);
-        }
-        let raw = u128::from_le_bytes([
-            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10], 0, 0,
-            0, 0, 0, 0, 0,
-        ]) & ((1u128 << 72) - 1);
-        let prefix_bits = ((p2 & 0x1F) as u128) << 72;
-        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[11]), 11);
-    }
-
-    // len=12: p2 >= 0x10
-    if p2 >= 0x10 {
-        if data.len() < 12 {
-            return (0, 0);
-        }
-        let raw = u128::from_le_bytes([
-            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-            data[11], 0, 0, 0, 0, 0, 0,
-        ]) & ((1u128 << 80) - 1);
-        let prefix_bits = ((p2 & 0x0F) as u128) << 80;
-        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[12]), 12);
-    }
-
-    // len=13: p2 >= 0x08
-    if p2 >= 0x08 {
-        if data.len() < 13 {
-            return (0, 0);
-        }
-        let raw = u128::from_le_bytes([
-            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-            data[11], data[12], 0, 0, 0, 0, 0,
-        ]) & ((1u128 << 88) - 1);
-        let prefix_bits = ((p2 & 0x07) as u128) << 88;
-        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[13]), 13);
-    }
-
-    // len=14: p2 >= 0x04
-    if p2 >= 0x04 {
-        if data.len() < 14 {
-            return (0, 0);
-        }
-        let raw = u128::from_le_bytes([
-            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-            data[11], data[12], data[13], 0, 0, 0, 0,
-        ]) & ((1u128 << 96) - 1);
-        let prefix_bits = ((p2 & 0x03) as u128) << 96;
-        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[14]), 14);
-    }
-
-    // len=15: p2 >= 0x02
-    if p2 >= 0x02 {
-        if data.len() < 15 {
-            return (0, 0);
-        }
-        let raw = u128::from_le_bytes([
-            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-            data[11], data[12], data[13], data[14], 0, 0, 0,
-        ]) & ((1u128 << 104) - 1);
-        let prefix_bits = ((p2 & 0x01) as u128) << 104;
-        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[15]), 15);
-    }
-
-    // len=16: p2 == 0x01
-    if p2 == 0x01 {
-        if data.len() < 16 {
-            return (0, 0);
-        }
-        let raw = u128::from_le_bytes([
-            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
-            data[11], data[12], data[13], data[14], data[15], 0, 0,
-        ]) & ((1u128 << 112) - 1);
-        return (raw.wrapping_add(OFFSETS_128_EXT[16]), 16);
-    }
-
-    // len=18: p2 == 0x00 - raw 128-bit encoding
-    if data.len() < 18 {
-        return (0, 0);
-    }
-    let raw = u128::from_le_bytes([
-        data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
-        data[12], data[13], data[14], data[15], data[16], data[17],
-    ]);
-    (raw.wrapping_add(OFFSETS_128_EXT[18]), 18)
 }
 
 /// Decode a u128 from a byte slice (fallback for no asm feature).

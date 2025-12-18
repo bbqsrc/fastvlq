@@ -4,6 +4,7 @@
 //! decoding speed. The total number of bytes can always be derived from the very first byte.
 //!
 //! Supported types:
+//! - `Vu21`: unsigned 21-bit (max 3 bytes)
 //! - `Vu32` / `Vi32`: unsigned/signed 32-bit (max 5 bytes)
 //! - `Vu64` / `Vi64`: unsigned/signed 64-bit (max 9 bytes)
 //! - `Vu128` / `Vi128`: unsigned/signed 128-bit (max 18 bytes)
@@ -40,9 +41,13 @@ mod macros;
 mod vi128;
 mod vi32;
 mod vi64;
+// mod vu21;
 mod vu128;
 mod vu32;
 mod vu64;
+
+#[cfg(feature = "string")]
+mod string;
 
 pub mod batch;
 
@@ -58,6 +63,7 @@ pub mod ileb128;
 use std::io::{Read, Result as IoResult, Write};
 
 // Unsigned types
+// pub use vu21::{Vu21, decode_vu21_slice, encode_vu21};
 pub use vu32::{Vu32, decode_vu32_slice, encode_vu32};
 pub use vu64::{Vu64, decode_vu64_slice, encode_vu64};
 pub use vu128::{Vu128, decode_vu128_slice, encode_vu128};
@@ -78,6 +84,9 @@ pub use vi128::{
 
 #[cfg(any(feature = "async-futures", feature = "async-tokio"))]
 pub use ext::{AsyncReadVintExt, AsyncWriteVintExt};
+
+#[cfg(feature = "string")]
+pub use string::UtfVu21;
 
 #[cfg(feature = "std")]
 /// Extension trait for reading VLQ-encoded integers from a reader.

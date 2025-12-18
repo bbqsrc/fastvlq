@@ -30,7 +30,7 @@ pub const fn zigzag_decode_i32(n: u32) -> i32 {
 /// Writes directly to output buffer.
 #[cfg(all(target_arch = "aarch64", feature = "asm"))]
 #[inline(always)]
-fn encode_vi32_asm(n: i32, out: &mut [u8; VU32_BUF_SIZE]) {
+fn encode_vi32_impl(n: i32, out: &mut [u8; VU32_BUF_SIZE]) {
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
@@ -108,20 +108,11 @@ fn encode_vi32_asm(n: i32, out: &mut [u8; VU32_BUF_SIZE]) {
     }
 }
 
-/// Encode a signed i32 using zigzag encoding to VLQ.
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-#[inline(always)]
-pub fn encode_vi32(n: i32) -> Vi32 {
-    let mut bytes = [0u8; VU32_BUF_SIZE];
-    encode_vi32_asm(n, &mut bytes);
-    Vi32(Vu32(bytes))
-}
-
 /// Fused zigzag + encode for i32 using x86_64 inline asm.
 /// Writes directly to output buffer.
 #[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
-fn encode_vi32_asm_x86(n: i32, out: &mut [u8; VU32_BUF_SIZE]) {
+fn encode_vi32_impl(n: i32, out: &mut [u8; VU32_BUF_SIZE]) {
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
@@ -202,22 +193,28 @@ fn encode_vi32_asm_x86(n: i32, out: &mut [u8; VU32_BUF_SIZE]) {
 }
 
 /// Encode a signed i32 using zigzag encoding to VLQ.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
 #[inline(always)]
 pub fn encode_vi32(n: i32) -> Vi32 {
-    let mut bytes = [0u8; VU32_BUF_SIZE];
-    encode_vi32_asm_x86(n, &mut bytes);
-    Vi32(Vu32(bytes))
-}
+    #[cfg(any(
+        all(target_arch = "aarch64", feature = "asm"),
+        all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+    ))]
+    {
+        let mut bytes = core::mem::MaybeUninit::<[u8; VU32_BUF_SIZE]>::uninit();
+        // SAFETY: ASM writes 1 byte at offset 0 (prefix) and 4 bytes at offset 1 (data)
+        unsafe {
+            encode_vi32_impl(n, &mut *bytes.as_mut_ptr());
+            Vi32(Vu32(bytes.assume_init()))
+        }
+    }
 
-/// Encode a signed i32 using zigzag encoding to VLQ.
-#[cfg(not(any(
-    all(target_arch = "aarch64", feature = "asm"),
-    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
-)))]
-#[inline(always)]
-pub fn encode_vi32(n: i32) -> Vi32 {
-    Vi32(encode_vu32(zigzag_encode_i32(n)))
+    #[cfg(not(any(
+        all(target_arch = "aarch64", feature = "asm"),
+        all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+    )))]
+    {
+        Vi32(encode_vu32(zigzag_encode_i32(n)))
+    }
 }
 
 /// Decode a Vi32 back to a native i32.
