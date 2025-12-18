@@ -2,7 +2,10 @@
 
 use core::fmt::{Debug, Display};
 
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+#[cfg(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+))]
 use crate::vu64::decode_vu64_slice;
 
 pub(crate) const VU32_BUF_SIZE: usize = 5;
@@ -465,16 +468,22 @@ static BYTE_MASKS_32: [u32; 6] = [
 
 /// Decode a u32 from a byte slice by delegating to the u64 decoder.
 /// Returns (0, 0) for empty or invalid input.
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
+#[cfg(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+))]
 #[inline(always)]
 pub fn decode_vu32_slice(data: &[u8]) -> (u32, usize) {
     let (value, len) = decode_vu64_slice(data);
     (value as u32, len)
 }
 
-/// Decode a u32 from a byte slice (fallback for non-aarch64 or no asm feature).
+/// Decode a u32 from a byte slice (fallback for no asm feature).
 /// Returns (0, 0) for empty or invalid input.
-#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
+#[cfg(not(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+)))]
 #[inline(always)]
 pub fn decode_vu32_slice(data: &[u8]) -> (u32, usize) {
     let Some(&p) = data.first() else {

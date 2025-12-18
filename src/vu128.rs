@@ -2049,10 +2049,305 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
     (((value_hi as u128) << 64) | (value_lo as u128), len)
 }
 
-/// Decode a u128 from a byte slice (fallback for non-aarch64 or no asm feature).
+/// Decode a u128 from a byte slice using x86_64 assembly.
 ///
 /// Returns (value, bytes_consumed). Returns (0, 0) for empty/invalid input.
-#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+#[inline(always)]
+pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
+    let data_len = data.len();
+
+    if data_len == 0 {
+        return (0, 0);
+    }
+
+    let value_lo: u64;
+    let value_hi: u64;
+    let len: usize;
+
+    // Offset constants for standard format (len 1-8)
+    const OFFSET2: u64 = 0x80;
+    const OFFSET3: u64 = 0x4080;
+    const OFFSET4: u64 = 0x20_4080;
+    const OFFSET5: u64 = 0x1020_4080;
+    const OFFSET6: u64 = 0x0008_1020_4080;
+    const OFFSET7: u64 = 0x0408_1020_4080;
+    const OFFSET8: u64 = 0x0002_0408_1020_4080;
+    const OFFSET9: u64 = 0x0102_0408_1020_4080;
+
+    // SAFETY: We've verified data is not empty. Bounds checked after decode.
+    unsafe {
+        core::arch::asm!(
+            // Load prefix byte
+            "movzx  {p1:e}, byte ptr [{ptr}]",
+
+            // Check if extended format (p1 == 0)
+            "test   {p1:e}, {p1:e}",
+            "jz     200f",
+
+            // Standard format: LZCNT dispatch for len 1-8
+            "lzcnt  {len:e}, {p1:e}",
+            "sub    {len:e}, 23",              // len=1->1, ..., len=8->8
+
+            // Computed jump: 64-byte aligned handlers
+            "lea    {jump:r}, [rip + 1f]",
+            "mov    {idx:e}, {len:e}",
+            "sub    {idx:e}, 1",
+            "shl    {idx:e}, 6",               // multiply by 64
+            "add    {jump:r}, {idx:r}",
+            "jmp    {jump:r}",
+
+            // len=1 handler (64 bytes)
+            ".p2align 6",
+            "1:",
+            "and    {p1:r}, 0x7F",
+            "mov    {out_lo:r}, {p1:r}",
+            "xor    {out_hi:e}, {out_hi:e}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=2: 1 data byte
+            "movzx  {out_lo:e}, byte ptr [{ptr} + 1]",
+            "and    {p1:e}, 0x3F",
+            "shl    {p1:r}, 8",
+            "or     {out_lo:r}, {p1:r}",
+            "add    {out_lo:r}, {off2:r}",
+            "xor    {out_hi:e}, {out_hi:e}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=3: 2 data bytes
+            "movzx  {out_lo:e}, word ptr [{ptr} + 1]",
+            "and    {p1:e}, 0x1F",
+            "shl    {p1:r}, 16",
+            "or     {out_lo:r}, {p1:r}",
+            "add    {out_lo:r}, {off3:r}",
+            "xor    {out_hi:e}, {out_hi:e}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=4: 3 data bytes
+            "mov    {out_lo:e}, dword ptr [{ptr} + 1]",
+            "and    {out_lo:r}, 0xFFFFFF",
+            "and    {p1:e}, 0x0F",
+            "shl    {p1:r}, 24",
+            "or     {out_lo:r}, {p1:r}",
+            "add    {out_lo:r}, {off4:r}",
+            "xor    {out_hi:e}, {out_hi:e}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=5: 4 data bytes
+            "mov    {out_lo:e}, dword ptr [{ptr} + 1]",
+            "and    {p1:e}, 0x07",
+            "shl    {p1:r}, 32",
+            "or     {out_lo:r}, {p1:r}",
+            "add    {out_lo:r}, {off5:r}",
+            "xor    {out_hi:e}, {out_hi:e}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=6: 5 data bytes
+            "mov    {out_lo:r}, qword ptr [{ptr} + 1]",
+            "mov    {tmp:r}, 0xFF_FFFF_FFFF",
+            "and    {out_lo:r}, {tmp:r}",
+            "and    {p1:e}, 0x03",
+            "shl    {p1:r}, 40",
+            "or     {out_lo:r}, {p1:r}",
+            "add    {out_lo:r}, {off6:r}",
+            "xor    {out_hi:e}, {out_hi:e}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=7: 6 data bytes
+            "mov    {out_lo:r}, qword ptr [{ptr} + 1]",
+            "mov    {tmp:r}, 0xFFFF_FFFF_FFFF",
+            "and    {out_lo:r}, {tmp:r}",
+            "and    {p1:e}, 0x01",
+            "shl    {p1:r}, 48",
+            "or     {out_lo:r}, {p1:r}",
+            "add    {out_lo:r}, {off7:r}",
+            "xor    {out_hi:e}, {out_hi:e}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=8: 7 data bytes
+            "mov    {out_lo:r}, qword ptr [{ptr} + 1]",
+            "mov    {tmp:r}, 0xFF_FFFF_FFFF_FFFF",
+            "and    {out_lo:r}, {tmp:r}",
+            "add    {out_lo:r}, {off8:r}",
+            "xor    {out_hi:e}, {out_hi:e}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // Extended format placeholder - set len=0 to signal fallback needed
+            "200:",
+            "xor    {out_lo:e}, {out_lo:e}",
+            "xor    {out_hi:e}, {out_hi:e}",
+            "xor    {len:e}, {len:e}",
+
+            "100:",
+
+            ptr = in(reg) data.as_ptr(),
+            off2 = in(reg) OFFSET2,
+            off3 = in(reg) OFFSET3,
+            off4 = in(reg) OFFSET4,
+            off5 = in(reg) OFFSET5,
+            off6 = in(reg) OFFSET6,
+            off7 = in(reg) OFFSET7,
+            off8 = in(reg) OFFSET8,
+            p1 = out(reg) _,
+            out_lo = out(reg) value_lo,
+            out_hi = out(reg) value_hi,
+            len = out(reg) len,
+            tmp = out(reg) _,
+            jump = out(reg) _,
+            idx = out(reg) _,
+            options(pure, readonly, nostack),
+        );
+    }
+
+    // Handle extended format in Rust (len 9-18) when asm returns len=0
+    if len == 0 {
+        return decode_vu128_slice_extended(data);
+    }
+
+    // Bounds check after decode
+    if len > data_len {
+        return (0, 0);
+    }
+
+    (((value_hi as u128) << 64) | (value_lo as u128), len)
+}
+
+/// Handle extended format (p1 == 0) for u128 decode on x86_64.
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+#[inline(always)]
+fn decode_vu128_slice_extended(data: &[u8]) -> (u128, usize) {
+    let Some(&p2) = data.get(1) else {
+        return (0, 0);
+    };
+
+    // len=9: p2 >= 0x80
+    if p2 >= 0x80 {
+        if data.len() < 9 {
+            return (0, 0);
+        }
+        let raw = u64::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], 0,
+        ]) as u128
+            & 0xFF_FFFF_FFFF_FFFF;
+        let prefix_bits = (p2 as u128) << 56;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[9]), 9);
+    }
+
+    // len=10: p2 >= 0x40
+    if p2 >= 0x40 {
+        if data.len() < 10 {
+            return (0, 0);
+        }
+        let raw = u64::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
+        ]) as u128;
+        let prefix_bits = ((p2 & 0x3F) as u128) << 64;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[10]), 10);
+    }
+
+    // len=11: p2 >= 0x20
+    if p2 >= 0x20 {
+        if data.len() < 11 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10], 0, 0,
+            0, 0, 0, 0, 0,
+        ]) & ((1u128 << 72) - 1);
+        let prefix_bits = ((p2 & 0x1F) as u128) << 72;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[11]), 11);
+    }
+
+    // len=12: p2 >= 0x10
+    if p2 >= 0x10 {
+        if data.len() < 12 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+            data[11], 0, 0, 0, 0, 0, 0,
+        ]) & ((1u128 << 80) - 1);
+        let prefix_bits = ((p2 & 0x0F) as u128) << 80;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[12]), 12);
+    }
+
+    // len=13: p2 >= 0x08
+    if p2 >= 0x08 {
+        if data.len() < 13 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+            data[11], data[12], 0, 0, 0, 0, 0,
+        ]) & ((1u128 << 88) - 1);
+        let prefix_bits = ((p2 & 0x07) as u128) << 88;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[13]), 13);
+    }
+
+    // len=14: p2 >= 0x04
+    if p2 >= 0x04 {
+        if data.len() < 14 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+            data[11], data[12], data[13], 0, 0, 0, 0,
+        ]) & ((1u128 << 96) - 1);
+        let prefix_bits = ((p2 & 0x03) as u128) << 96;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[14]), 14);
+    }
+
+    // len=15: p2 >= 0x02
+    if p2 >= 0x02 {
+        if data.len() < 15 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+            data[11], data[12], data[13], data[14], 0, 0, 0,
+        ]) & ((1u128 << 104) - 1);
+        let prefix_bits = ((p2 & 0x01) as u128) << 104;
+        return ((prefix_bits | raw).wrapping_add(OFFSETS_128_EXT[15]), 15);
+    }
+
+    // len=16: p2 == 0x01
+    if p2 == 0x01 {
+        if data.len() < 16 {
+            return (0, 0);
+        }
+        let raw = u128::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10],
+            data[11], data[12], data[13], data[14], data[15], 0, 0,
+        ]) & ((1u128 << 112) - 1);
+        return (raw.wrapping_add(OFFSETS_128_EXT[16]), 16);
+    }
+
+    // len=18: p2 == 0x00 - raw 128-bit encoding
+    if data.len() < 18 {
+        return (0, 0);
+    }
+    let raw = u128::from_le_bytes([
+        data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+        data[12], data[13], data[14], data[15], data[16], data[17],
+    ]);
+    (raw.wrapping_add(OFFSETS_128_EXT[18]), 18)
+}
+
+/// Decode a u128 from a byte slice (fallback for no asm feature).
+///
+/// Returns (value, bytes_consumed). Returns (0, 0) for empty/invalid input.
+#[cfg(not(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+)))]
 #[inline(always)]
 pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
     let Some(&p1) = data.first() else {

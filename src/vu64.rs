@@ -829,10 +829,162 @@ pub fn decode_vu64_slice(data: &[u8]) -> (u64, usize) {
     (value, len)
 }
 
-/// Decode a u64 from a byte slice (fallback for non-aarch64 or no asm feature).
+/// Decode a u64 from a byte slice using LZCNT dispatch x86_64 assembly.
 ///
 /// Returns (value, bytes_consumed). Returns (0, 0) for empty/invalid input.
-#[cfg(not(all(target_arch = "aarch64", feature = "asm")))]
+#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
+#[inline(always)]
+pub fn decode_vu64_slice(data: &[u8]) -> (u64, usize) {
+    let data_len = data.len();
+
+    if data_len == 0 {
+        return (0, 0);
+    }
+
+    let value: u64;
+    let len: usize;
+
+    // Offset constants
+    const OFFSET2: u64 = 0x80;
+    const OFFSET3: u64 = 0x4080;
+    const OFFSET4: u64 = 0x20_4080;
+    const OFFSET5: u64 = 0x1020_4080;
+    const OFFSET6: u64 = 0x0008_1020_4080;
+    const OFFSET7: u64 = 0x0408_1020_4080;
+    const OFFSET8: u64 = 0x0002_0408_1020_4080;
+    const OFFSET9: u64 = 0x0102_0408_1020_4080;
+
+    // SAFETY: We've verified data is not empty. Bounds checked after decode.
+    unsafe {
+        core::arch::asm!(
+            // Load prefix byte and get length via LZCNT
+            "movzx  {prefix:e}, byte ptr [{ptr}]",
+            "lzcnt  {len:e}, {prefix:e}",
+            "sub    {len:e}, 23",              // len = 1-9
+
+            // Computed jump: 64-byte aligned handlers
+            "lea    {jump:r}, [rip + 1f]",
+            "mov    {idx:e}, {len:e}",
+            "sub    {idx:e}, 1",
+            "shl    {idx:e}, 6",               // multiply by 64
+            "add    {jump:r}, {idx:r}",
+            "jmp    {jump:r}",
+
+            // len=1 handler (64 bytes)
+            ".p2align 6",
+            "1:",
+            "and    {prefix:r}, 0x7F",
+            "mov    {out:r}, {prefix:r}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=2: 1 data byte
+            "movzx  {out:e}, byte ptr [{ptr} + 1]",
+            "and    {prefix:e}, 0x3F",
+            "shl    {prefix:r}, 8",
+            "or     {out:r}, {prefix:r}",
+            "add    {out:r}, {off2:r}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=3: 2 data bytes
+            "movzx  {out:e}, word ptr [{ptr} + 1]",
+            "and    {prefix:e}, 0x1F",
+            "shl    {prefix:r}, 16",
+            "or     {out:r}, {prefix:r}",
+            "add    {out:r}, {off3:r}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=4: 3 data bytes
+            "mov    {out:e}, dword ptr [{ptr} + 1]",
+            "and    {out:r}, 0xFFFFFF",
+            "and    {prefix:e}, 0x0F",
+            "shl    {prefix:r}, 24",
+            "or     {out:r}, {prefix:r}",
+            "add    {out:r}, {off4:r}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=5: 4 data bytes
+            "mov    {out:e}, dword ptr [{ptr} + 1]",
+            "and    {prefix:e}, 0x07",
+            "shl    {prefix:r}, 32",
+            "or     {out:r}, {prefix:r}",
+            "add    {out:r}, {off5:r}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=6: 5 data bytes
+            "mov    {out:r}, qword ptr [{ptr} + 1]",
+            "mov    {tmp:r}, 0xFF_FFFF_FFFF",
+            "and    {out:r}, {tmp:r}",
+            "and    {prefix:e}, 0x03",
+            "shl    {prefix:r}, 40",
+            "or     {out:r}, {prefix:r}",
+            "add    {out:r}, {off6:r}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=7: 6 data bytes
+            "mov    {out:r}, qword ptr [{ptr} + 1]",
+            "mov    {tmp:r}, 0xFFFF_FFFF_FFFF",
+            "and    {out:r}, {tmp:r}",
+            "and    {prefix:e}, 0x01",
+            "shl    {prefix:r}, 48",
+            "or     {out:r}, {prefix:r}",
+            "add    {out:r}, {off7:r}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=8: 7 data bytes
+            "mov    {out:r}, qword ptr [{ptr} + 1]",
+            "mov    {tmp:r}, 0xFF_FFFF_FFFF_FFFF",
+            "and    {out:r}, {tmp:r}",
+            "add    {out:r}, {off8:r}",
+            "jmp    100f",
+            ".p2align 6",
+
+            // len=9: 8 data bytes
+            "mov    {out:r}, qword ptr [{ptr} + 1]",
+            "add    {out:r}, {off9:r}",
+
+            "100:",
+
+            ptr = in(reg) data.as_ptr(),
+            off2 = in(reg) OFFSET2,
+            off3 = in(reg) OFFSET3,
+            off4 = in(reg) OFFSET4,
+            off5 = in(reg) OFFSET5,
+            off6 = in(reg) OFFSET6,
+            off7 = in(reg) OFFSET7,
+            off8 = in(reg) OFFSET8,
+            off9 = in(reg) OFFSET9,
+            prefix = out(reg) _,
+            out = out(reg) value,
+            len = out(reg) len,
+            tmp = out(reg) _,
+            jump = out(reg) _,
+            idx = out(reg) _,
+            options(pure, readonly, nostack),
+        );
+    }
+
+    // Bounds check after decode
+    if len > data_len {
+        return (0, 0);
+    }
+
+    (value, len)
+}
+
+/// Decode a u64 from a byte slice (fallback for no asm feature).
+///
+/// Returns (value, bytes_consumed). Returns (0, 0) for empty/invalid input.
+#[cfg(not(any(
+    all(target_arch = "aarch64", feature = "asm"),
+    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
+)))]
 #[inline(always)]
 pub fn decode_vu64_slice(data: &[u8]) -> (u64, usize) {
     let Some(&p) = data.first() else {
