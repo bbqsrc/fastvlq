@@ -6,7 +6,7 @@ use core::fmt::{Debug, Display};
     all(target_arch = "aarch64", feature = "asm"),
     all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
 ))]
-use crate::vu64::decode_vu64_slice;
+use crate::vu64::{decode_vu64_slice, encode_vu64};
 
 pub(crate) const VU32_BUF_SIZE: usize = 5;
 
@@ -17,157 +17,6 @@ pub(crate) const fn decode_len_vu32(n: u8) -> u8 {
     if len > 5 { 5 } else { len }
 }
 
-/// Encode a u32 in VLQ format using aarch64 inline asm.
-/// Writes directly to output buffer.
-#[cfg(all(target_arch = "aarch64", feature = "asm"))]
-#[inline(always)]
-fn encode_vu32_impl(n: u32, out: &mut [u8; VU32_BUF_SIZE]) {
-    // SAFETY: Writing to valid buffer.
-    unsafe {
-        core::arch::asm!(
-            // Compare against thresholds and branch
-            "cmp    {n:w}, #128",
-            "b.lo   100f",
-
-            "mov    w4, #0x4080",
-            "cmp    {n:w}, w4",
-            "b.lo   101f",
-
-            "mov    w4, #0x4080",
-            "movk   w4, #0x20, lsl #16",
-            "cmp    {n:w}, w4",
-            "b.lo   102f",
-
-            "mov    w4, #0x4080",
-            "movk   w4, #0x1020, lsl #16",
-            "cmp    {n:w}, w4",
-            "b.lo   103f",
-
-            // len=5: offset = 270549120 = 0x10204080
-            "mov    w4, #0x4080",
-            "movk   w4, #0x1020, lsl #16",
-            "sub    {data:w}, {n:w}, w4",
-            "mov    {prefix:w}, #0x08",
-            "b      200f",
-
-            // len=1: n < 128
-            "100:",
-            "orr    {prefix:w}, {n:w}, #0x80",
-            "mov    {data:w}, #0",
-            "b      200f",
-
-            // len=2: offset = 128
-            "101:",
-            "sub    {data:w}, {n:w}, #128",
-            "lsr    {prefix:w}, {data:w}, #8",
-            "orr    {prefix:w}, {prefix:w}, #0x40",
-            "b      200f",
-
-            // len=3: offset = 16512 = 0x4080
-            "102:",
-            "mov    w4, #0x4080",
-            "sub    {data:w}, {n:w}, w4",
-            "lsr    {prefix:w}, {data:w}, #16",
-            "orr    {prefix:w}, {prefix:w}, #0x20",
-            "b      200f",
-
-            // len=4: offset = 2113664 = 0x204080
-            "103:",
-            "mov    w4, #0x4080",
-            "movk   w4, #0x20, lsl #16",
-            "sub    {data:w}, {n:w}, w4",
-            "lsr    {prefix:w}, {data:w}, #24",
-            "orr    {prefix:w}, {prefix:w}, #0x10",
-
-            "200:",
-            // Write prefix byte and data word to output buffer
-            "strb   {prefix:w}, [{out}]",
-            "str    {data:w}, [{out}, #1]",
-
-            n = in(reg) n,
-            out = in(reg) out.as_mut_ptr(),
-            prefix = out(reg) _,
-            data = out(reg) _,
-            out("w4") _,
-            options(nostack),
-        );
-    }
-}
-
-/// Encode a u32 in VLQ format using x86_64 inline asm.
-/// Writes directly to output buffer.
-#[cfg(all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm"))]
-#[inline(always)]
-fn encode_vu32_impl(n: u32, out: &mut [u8; VU32_BUF_SIZE]) {
-    // SAFETY: Writing to valid buffer.
-    unsafe {
-        core::arch::asm!(
-            // Compare against thresholds and branch
-            "cmp    {n:e}, 128",
-            "jb     100f",
-
-            "cmp    {n:e}, 0x4080",
-            "jb     101f",
-
-            "cmp    {n:e}, 0x204080",
-            "jb     102f",
-
-            "cmp    {n:e}, 0x10204080",
-            "jb     103f",
-
-            // len=5: offset = 270549120 = 0x10204080
-            "mov    {data:e}, {n:e}",
-            "sub    {data:e}, 0x10204080",
-            "mov    {prefix:e}, 0x08",
-            "jmp    200f",
-
-            // len=1: n < 128
-            "100:",
-            "mov    {prefix:e}, {n:e}",
-            "or     {prefix:e}, 0x80",
-            "xor    {data:e}, {data:e}",
-            "jmp    200f",
-
-            // len=2: offset = 128
-            "101:",
-            "mov    {data:e}, {n:e}",
-            "sub    {data:e}, 128",
-            "mov    {prefix:e}, {data:e}",
-            "shr    {prefix:e}, 8",
-            "or     {prefix:e}, 0x40",
-            "jmp    200f",
-
-            // len=3: offset = 16512 = 0x4080
-            "102:",
-            "mov    {data:e}, {n:e}",
-            "sub    {data:e}, 0x4080",
-            "mov    {prefix:e}, {data:e}",
-            "shr    {prefix:e}, 16",
-            "or     {prefix:e}, 0x20",
-            "jmp    200f",
-
-            // len=4: offset = 2113664 = 0x204080
-            "103:",
-            "mov    {data:e}, {n:e}",
-            "sub    {data:e}, 0x204080",
-            "mov    {prefix:e}, {data:e}",
-            "shr    {prefix:e}, 24",
-            "or     {prefix:e}, 0x10",
-
-            "200:",
-            // Write prefix byte and data dword to output buffer
-            "mov    byte ptr [{out}], {prefix:l}",
-            "mov    dword ptr [{out} + 1], {data:e}",
-
-            n = in(reg) n,
-            out = in(reg) out.as_mut_ptr(),
-            prefix = out(reg) _,
-            data = out(reg) _,
-            options(nostack),
-        );
-    }
-}
-
 /// Encode a u32 in VLQ format.
 #[inline(always)]
 pub fn encode_vu32(n: u32) -> Vu32 {
@@ -176,12 +25,10 @@ pub fn encode_vu32(n: u32) -> Vu32 {
         all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
     ))]
     {
-        let mut bytes = core::mem::MaybeUninit::<[u8; VU32_BUF_SIZE]>::uninit();
-        // SAFETY: ASM writes 1 byte at offset 0 (prefix) and 4 bytes at offset 1 (data)
-        unsafe {
-            encode_vu32_impl(n, &mut *bytes.as_mut_ptr());
-            Vu32(bytes.assume_init())
-        }
+        // Use the u64 encoder and copy the first 5 bytes
+        let encoded = encode_vu64(n as u64);
+        let src = encoded.0;
+        Vu32([src[0], src[1], src[2], src[3], src[4]])
     }
 
     #[cfg(not(any(

@@ -53,11 +53,11 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
 
             // === Low 64-bit path (lengths 1-9) ===
             "cmp    x0, #128",
-            "b.lo   100f",
+            "b.lo   200f",
 
             "mov    x4, #0x4080",
             "cmp    x0, x4",
-            "b.lo   101f",
+            "b.lo   201f",
 
             "mov    x4, #0x4080",
             "movk   x4, #0x20, lsl #16",
@@ -101,7 +101,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "movk   x4, #0x0408, lsl #32",
             "movk   x4, #0x8102, lsl #48",
             "cmp    x0, x4",
-            "b.lo   110f",
+            "b.lo   210f",
 
             // len=9
             "mov    x4, #0x4080",
@@ -113,25 +113,25 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "lsr    x6, x2, #56",
             "and    x2, x2, #0x00FFFFFFFFFFFFFF",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             // len=1
-            "100:",
+            "200:",
             "orr    x5, x0, #0x80",
             "mov    x6, #0",
             "mov    x2, #0",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             // len=2
-            "101:",
+            "201:",
             "sub    x2, x0, #128",
             "lsr    x5, x2, #8",
             "orr    x5, x5, #0x40",
             "mov    x6, #0",
             "and    x2, x2, #0xFF",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             // len=3
             "102:",
@@ -142,7 +142,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "mov    x6, #0",
             "and    x2, x2, #0xFFFF",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             // len=4
             "103:",
@@ -154,7 +154,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "mov    x6, #0",
             "ubfx   x2, x2, #0, #24",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             // len=5
             "104:",
@@ -166,7 +166,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "mov    x6, #0",
             "and    x2, x2, #0xFFFFFFFF",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             // len=6
             "105:",
@@ -180,7 +180,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "mov    x7, #0xFFFFFFFFFF",
             "and    x2, x2, x7",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             // len=7
             "106:",
@@ -194,7 +194,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "mov    x7, #0xFFFFFFFFFFFF",
             "and    x2, x2, x7",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             // len=8
             "107:",
@@ -208,10 +208,10 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "mov    x7, #0xFFFFFFFFFFFFFF",
             "and    x2, x2, x7",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             // len=10 (gap between 8-byte and 9-byte)
-            "110:",
+            "210:",
             "mov    x4, #0x4080",
             "movk   x4, #0x1020, lsl #16",
             "movk   x4, #0x0408, lsl #32",
@@ -222,7 +222,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "orr    x6, x6, x2, lsr #56",
             "and    x2, x2, #0x00FFFFFFFFFFFFFF",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             // === High 64-bit path (lengths 9-18) ===
             "50:",
@@ -242,7 +242,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "mov    x7, #0x00FFFFFFFFFFFFFF",
             "and    x2, x2, x7",
             "mov    x3, #0",
-            "b      200f",
+            "b      99f",
 
             "51:",
             // 10+ byte encodings
@@ -285,7 +285,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "mov    x6, #0",
             "mov    x2, x0",
             "mov    x3, x1",
-            "b      200f",
+            "b      99f",
 
             // len=10
             "150:",
@@ -300,7 +300,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "lsr    x6, x3, #6",
             "orr    x6, x6, #0x40",
             "and    x3, x3, #0x3F",
-            "b      200f",
+            "b      99f",
 
             // len=11
             "151:",
@@ -316,7 +316,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "orr    x6, x6, #0x20",
             "mov    x7, #0x1FFF",
             "and    x3, x3, x7",
-            "b      200f",
+            "b      99f",
 
             // len=12
             "152:",
@@ -333,7 +333,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "orr    x6, x6, #0x10",
             "mov    x7, #0xFFFFF",
             "and    x3, x3, x7",
-            "b      200f",
+            "b      99f",
 
             // len=13
             "153:",
@@ -350,7 +350,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "orr    x6, x6, #0x08",
             "mov    x7, #0x7FFFFFF",
             "and    x3, x3, x7",
-            "b      200f",
+            "b      99f",
 
             // len=14
             "154:",
@@ -368,7 +368,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "orr    x6, x6, #0x04",
             "mov    x7, #0x3FFFFFFFF",
             "and    x3, x3, x7",
-            "b      200f",
+            "b      99f",
 
             // len=15
             "155:",
@@ -387,7 +387,7 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "orr    x6, x6, #0x02",
             "mov    x7, #0x1FFFFFFFFFF",
             "and    x3, x3, x7",
-            "b      200f",
+            "b      99f",
 
             // len=16
             "156:",
@@ -402,9 +402,9 @@ fn encode_vi128_asm(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "sbc    x3, x1, x7",
             "mov    x5, #0",
             "mov    x6, #0x01",
-            "b      200f",
+            "b      99f",
 
-            "200:",
+            "99:",
             // Write to output buffer
             // p1 at offset 0
             "strb   w5, [{out}]",
@@ -477,10 +477,10 @@ fn encode_vi128_asm_x86(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
 
             // === Low 64-bit path (lengths 1-9) ===
             "cmp    {zz_lo:r}, 128",
-            "jb     100f",
+            "jb     200f",
 
             "cmp    {zz_lo:r}, 0x4080",
-            "jb     101f",
+            "jb     201f",
 
             "cmp    {zz_lo:r}, 0x204080",
             "jb     102f",
@@ -508,7 +508,7 @@ fn encode_vi128_asm_x86(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             // Check for 9-byte encoding (second byte >= 0x80)
             "mov    {tmp:r}, 0x8102040810204080",
             "cmp    {zz_lo:r}, {tmp:r}",
-            "jb     110f",
+            "jb     210f",
 
             // len=9
             "mov    {tmp:r}, 0x102040810204080",
@@ -523,7 +523,7 @@ fn encode_vi128_asm_x86(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "jmp    200f",
 
             // len=1
-            "100:",
+            "200:",
             "mov    {prefix1:r}, {zz_lo:r}",
             "or     {prefix1:r}, 0x80",
             "xor    {prefix2:r}, {prefix2:r}",
@@ -532,7 +532,7 @@ fn encode_vi128_asm_x86(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "jmp    200f",
 
             // len=2
-            "101:",
+            "201:",
             "mov    {data_lo:r}, {zz_lo:r}",
             "sub    {data_lo:r}, 128",
             "mov    {prefix1:r}, {data_lo:r}",
@@ -623,7 +623,7 @@ fn encode_vi128_asm_x86(n: i128, out: &mut [u8; VU128_BUF_SIZE]) {
             "jmp    200f",
 
             // len=10 (gap between 8-byte and 9-byte)
-            "110:",
+            "210:",
             "mov    {tmp:r}, 0x102040810204080",
             "mov    {data_lo:r}, {zz_lo:r}",
             "sub    {data_lo:r}, {tmp:r}",

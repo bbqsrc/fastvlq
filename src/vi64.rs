@@ -41,11 +41,11 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             // Now {n} contains zigzag-encoded unsigned value
             // Compare against thresholds and branch
             "cmp    {n}, #128",
-            "b.lo   100f",
+            "b.lo   200f",
 
             "mov    x4, #0x4080",
             "cmp    {n}, x4",
-            "b.lo   101f",
+            "b.lo   201f",
 
             "mov    x4, #0x4080",
             "movk   x4, #0x20, lsl #16",
@@ -90,20 +90,20 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "movk   x4, #0x0102, lsl #48",
             "sub    {data}, {n}, x4",
             "mov    {prefix}, #0x00",
-            "b      200f",
+            "b      99f",
 
             // len=1: n < 128
-            "100:",
+            "200:",
             "orr    {prefix}, {n}, #0x80",
             "mov    {data}, #0",
-            "b      200f",
+            "b      99f",
 
             // len=2: offset = 128
-            "101:",
+            "201:",
             "sub    {data}, {n}, #128",
             "lsr    {prefix}, {data}, #8",
             "orr    {prefix}, {prefix}, #0x40",
-            "b      200f",
+            "b      99f",
 
             // len=3: offset = 16512
             "102:",
@@ -111,7 +111,7 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "sub    {data}, {n}, x4",
             "lsr    {prefix}, {data}, #16",
             "orr    {prefix}, {prefix}, #0x20",
-            "b      200f",
+            "b      99f",
 
             // len=4: offset = 2113664
             "103:",
@@ -120,7 +120,7 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "sub    {data}, {n}, x4",
             "lsr    {prefix}, {data}, #24",
             "orr    {prefix}, {prefix}, #0x10",
-            "b      200f",
+            "b      99f",
 
             // len=5: offset = 270549120
             "104:",
@@ -129,7 +129,7 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "sub    {data}, {n}, x4",
             "lsr    {prefix}, {data}, #32",
             "orr    {prefix}, {prefix}, #0x08",
-            "b      200f",
+            "b      99f",
 
             // len=6: offset = 34630287488
             "105:",
@@ -139,7 +139,7 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "sub    {data}, {n}, x4",
             "lsr    {prefix}, {data}, #40",
             "orr    {prefix}, {prefix}, #0x04",
-            "b      200f",
+            "b      99f",
 
             // len=7: offset = 4432676798592
             "106:",
@@ -149,7 +149,7 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "sub    {data}, {n}, x4",
             "lsr    {prefix}, {data}, #48",
             "orr    {prefix}, {prefix}, #0x02",
-            "b      200f",
+            "b      99f",
 
             // len=8: offset = 567382630219904
             "107:",
@@ -160,7 +160,7 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "sub    {data}, {n}, x4",
             "mov    {prefix}, #0x01",
 
-            "200:",
+            "99:",
             // Write prefix byte and data to output buffer
             "strb   {prefix:w}, [{out}]",
             "str    {data}, [{out}, #1]",
@@ -193,11 +193,11 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             // Now {zz} contains zigzag-encoded unsigned value
             // Compare against thresholds and branch
             "cmp    {zz:r}, 128",
-            "jb     100f",
+            "jb     200f",
 
             "mov    {tmp:r}, 0x4080",
             "cmp    {zz:r}, {tmp:r}",
-            "jb     101f",
+            "jb     201f",
 
             "mov    {tmp:r}, 0x204080",
             "cmp    {zz:r}, {tmp:r}",
@@ -207,44 +207,44 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "cmp    {zz:r}, {tmp:r}",
             "jb     103f",
 
-            "movabs {tmp:r}, 0x0008_1020_4080",
+            "movabs {tmp:r}, 0x000810204080",
             "cmp    {zz:r}, {tmp:r}",
             "jb     104f",
 
-            "movabs {tmp:r}, 0x0408_1020_4080",
+            "movabs {tmp:r}, 0x040810204080",
             "cmp    {zz:r}, {tmp:r}",
             "jb     105f",
 
-            "movabs {tmp:r}, 0x0002_0408_1020_4080",
+            "movabs {tmp:r}, 0x02040810204080",
             "cmp    {zz:r}, {tmp:r}",
             "jb     106f",
 
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
+            "movabs {tmp:r}, 0x0102040810204080",
             "cmp    {zz:r}, {tmp:r}",
             "jb     107f",
 
             // len=9
-            "movabs {tmp:r}, 0x0102_0408_1020_4080",
+            "movabs {tmp:r}, 0x0102040810204080",
             "mov    {data:r}, {zz:r}",
             "sub    {data:r}, {tmp:r}",
             "xor    {prefix:r}, {prefix:r}",
-            "jmp    200f",
+            "jmp    99f",
 
             // len=1
-            "100:",
+            "200:",
             "mov    {prefix:r}, {zz:r}",
             "or     {prefix:r}, 0x80",
             "xor    {data:r}, {data:r}",
-            "jmp    200f",
+            "jmp    99f",
 
             // len=2
-            "101:",
+            "201:",
             "mov    {data:r}, {zz:r}",
             "sub    {data:r}, 128",
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 8",
             "or     {prefix:r}, 0x40",
-            "jmp    200f",
+            "jmp    99f",
 
             // len=3
             "102:",
@@ -253,7 +253,7 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 16",
             "or     {prefix:r}, 0x20",
-            "jmp    200f",
+            "jmp    99f",
 
             // len=4
             "103:",
@@ -262,7 +262,7 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 24",
             "or     {prefix:r}, 0x10",
-            "jmp    200f",
+            "jmp    99f",
 
             // len=5
             "104:",
@@ -272,36 +272,36 @@ fn encode_vi64_impl(n: i64, out: &mut [u8; VU64_BUF_SIZE]) {
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 32",
             "or     {prefix:r}, 0x08",
-            "jmp    200f",
+            "jmp    99f",
 
             // len=6
             "105:",
-            "movabs {tmp:r}, 0x0008_1020_4080",
+            "movabs {tmp:r}, 0x000810204080",
             "mov    {data:r}, {zz:r}",
             "sub    {data:r}, {tmp:r}",
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 40",
             "or     {prefix:r}, 0x04",
-            "jmp    200f",
+            "jmp    99f",
 
             // len=7
             "106:",
-            "movabs {tmp:r}, 0x0408_1020_4080",
+            "movabs {tmp:r}, 0x040810204080",
             "mov    {data:r}, {zz:r}",
             "sub    {data:r}, {tmp:r}",
             "mov    {prefix:r}, {data:r}",
             "shr    {prefix:r}, 48",
             "or     {prefix:r}, 0x02",
-            "jmp    200f",
+            "jmp    99f",
 
             // len=8
             "107:",
-            "movabs {tmp:r}, 0x0002_0408_1020_4080",
+            "movabs {tmp:r}, 0x02040810204080",
             "mov    {data:r}, {zz:r}",
             "sub    {data:r}, {tmp:r}",
             "mov    {prefix:r}, 0x01",
 
-            "200:",
+            "99:",
             // Write prefix byte and data to output buffer
             "mov    byte ptr [{out}], {prefix:l}",
             "mov    qword ptr [{out} + 1], {data:r}",
@@ -364,7 +364,7 @@ pub fn decode_vi64_slice(data: &[u8]) -> (i64, usize) {
 /// A signed 64-bit integer in value-length quantity encoding using zigzag.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct Vi64(Vu64);
+pub struct Vi64(pub(crate) Vu64);
 
 #[allow(clippy::len_without_is_empty)]
 impl Vi64 {

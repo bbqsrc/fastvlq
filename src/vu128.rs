@@ -160,13 +160,13 @@ fn encode_vu128_asm(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
             "lsr    {idx}, {idx}, #8",          // idx = (56-clz)/7
 
             // Computed branch (16-byte handlers)
-            "adr    {jump}, 100f",
+            "adr    {jump}, 199f",
             "add    {jump}, {jump}, {idx}, lsl #4",
             "br     {jump}",
 
             // Handler table - each handler is exactly 16 bytes (4 instructions)
             ".p2align 4",
-            "100:",
+            "199:",
 
             // idx=0 (len=1): n < 128
             "orr    x5, x0, #0x80",
@@ -529,11 +529,11 @@ fn encode_vu128_asm_x86(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
 
             // === Low 64-bit path (lengths 1-9) ===
             "cmp    {n_lo:r}, 128",
-            "jb     100f",
+            "jb     199f",
 
             "mov    {tmp:r}, 0x4080",
             "cmp    {n_lo:r}, {tmp:r}",
-            "jb     101f",
+            "jb     191f",
 
             "mov    {tmp:r}, 0x204080",
             "cmp    {n_lo:r}, {tmp:r}",
@@ -557,7 +557,7 @@ fn encode_vu128_asm_x86(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
 
             // Check for 9-byte (second byte >= 0x80)
             "cmp    {n_lo:r}, {off9_gap:r}",
-            "jb     110f",
+            "jb     119f",
 
             // len=9
             "mov    {data_lo:r}, {n_lo:r}",
@@ -570,7 +570,7 @@ fn encode_vu128_asm_x86(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
             "jmp    200f",
 
             // len=1
-            "100:",
+            "199:",
             "mov    {p1:r}, {n_lo:r}",
             "or     {p1:r}, 0x80",
             "xor    {p2:r}, {p2:r}",
@@ -579,7 +579,7 @@ fn encode_vu128_asm_x86(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
             "jmp    200f",
 
             // len=2
-            "101:",
+            "191:",
             "mov    {data_lo:r}, {n_lo:r}",
             "sub    {data_lo:r}, 128",
             "mov    {p1:r}, {data_lo:r}",
@@ -663,7 +663,7 @@ fn encode_vu128_asm_x86(n: u128, out: &mut [u8; VU128_BUF_SIZE]) {
             "jmp    200f",
 
             // len=10 (gap case)
-            "110:",
+            "119:",
             "mov    {data_lo:r}, {n_lo:r}",
             "sub    {data_lo:r}, {off9:r}",
             "xor    {p1:r}, {p1:r}",
@@ -1064,17 +1064,17 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "sub    w4, w4, #24",              // len=1->0, ..., len=8->7
 
             // Computed branch: each handler is 32 bytes (8 instructions)
-            "adr    x10, 1f",
+            "adr    x10, 9f",
             "add    x10, x10, x4, lsl #5",
             "br     x10",
 
             // len=1 handler
             ".p2align 5",
-            "1:",
+            "9:",
             "and    {out_lo}, x3, #0x7F",
             "mov    {out_hi}, #0",
             "mov    {len:w}, #1",
-            "b      100f",
+            "b      199f",
             "nop", "nop", "nop", "nop",
 
             // len=2: offset=128 (preloaded)
@@ -1084,7 +1084,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo}, x5, x6, lsl #8",
             "mov    {out_hi}, #0",
             "mov    {len:w}, #2",
-            "b      100f",
+            "b      199f",
             "nop",
 
             // len=3: offset=0x4080 (preloaded)
@@ -1094,7 +1094,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo}, x5, x6, lsl #16",
             "mov    {out_hi}, #0",
             "mov    {len:w}, #3",
-            "b      100f",
+            "b      199f",
             "nop",
 
             // len=4: offset=0x204080 (preloaded)
@@ -1105,7 +1105,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo}, x5, x6, lsl #24",
             "mov    {out_hi}, #0",
             "mov    {len:w}, #4",
-            "b      100f",
+            "b      199f",
 
             // len=5: offset=0x10204080 (preloaded)
             "ldr    w5, [{ptr}, #1]",
@@ -1114,7 +1114,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo}, x5, x6, lsl #32",
             "mov    {out_hi}, #0",
             "mov    {len:w}, #5",
-            "b      100f",
+            "b      199f",
             "nop",
 
             // len=6: offset=0x0008_1020_4080 (preloaded)
@@ -1125,7 +1125,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo}, x5, x6, lsl #40",
             "mov    {out_hi}, #0",
             "mov    {len:w}, #6",
-            "b      100f",
+            "b      199f",
 
             // len=7: offset=0x0408_1020_4080 (preloaded)
             "ldr    x5, [{ptr}, #1]",
@@ -1135,7 +1135,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo}, x5, x6, lsl #48",
             "mov    {out_hi}, #0",
             "mov    {len:w}, #7",
-            "b      100f",
+            "b      199f",
 
             // len=8: offset=0x0002_0408_1020_4080 (preloaded)
             "ldr    x5, [{ptr}, #1]",
@@ -1143,7 +1143,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo}, {out_lo}, {off8}",
             "mov    {out_hi}, #0",
             "mov    {len:w}, #8",
-            "b      100f",
+            "b      199f",
             "nop", "nop",
 
             // Extended format: p1 == 0
@@ -1180,7 +1180,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "adds   {out_lo}, {out_lo}, {off9}",
             "adc    {out_hi}, {out_hi}, {off10_hi}",
             "mov    {len:w}, #10",
-            "b      100f",
+            "b      199f",
 
             // len=11: 9 data bytes, p2 mask 0x1F (NEON 128-bit load)
             "ldr    q0, [{ptr}, #2]",
@@ -1240,7 +1240,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "adds   {out_lo}, {out_lo}, {off9}",
             "adc    {out_hi}, {out_hi}, {off16_hi}",
             "mov    {len:w}, #16",
-            "b      100f",
+            "b      199f",
 
             // len=17: 15 data bytes (NEON 128-bit load)
             "ldr    q0, [{ptr}, #2]",
@@ -1248,7 +1248,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "mov    x5, v0.d[1]",
             "ubfx   {out_hi}, x5, #0, #56",
             "mov    {len:w}, #17",
-            "b      100f",
+            "b      199f",
             "nop", "nop",
 
             // len=9: p2 >= 0x80, 7 data bytes at [ptr+2] (preloaded)
@@ -1259,7 +1259,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "adds   {out_lo}, {out_lo}, {off9}",
             "adc    {out_hi}, xzr, xzr",
             "mov    {len:w}, #9",
-            "b      100f",
+            "b      199f",
 
             // len=18: raw 128-bit, 16 data bytes at [ptr+2] (NEON 128-bit load)
             "218:",
@@ -1267,30 +1267,30 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "mov    {out_lo}, v0.d[0]",
             "mov    {out_hi}, v0.d[1]",
             "mov    {len:w}, #18",
-            "b      100f",
+            "b      199f",
 
             // Overflow handlers for lengths that need adc + mov {len:w}
             "311:",  // len=11
             "adc    {out_hi}, {out_hi}, {off11_hi}",
             "mov    {len:w}, #11",
-            "b      100f",
+            "b      199f",
             "312:",  // len=12
             "adc    {out_hi}, {out_hi}, {off12_hi}",
             "mov    {len:w}, #12",
-            "b      100f",
+            "b      199f",
             "313:",  // len=13
             "adc    {out_hi}, {out_hi}, {off13_hi}",
             "mov    {len:w}, #13",
-            "b      100f",
+            "b      199f",
             "314:",  // len=14
             "adc    {out_hi}, {out_hi}, {off14_hi}",
             "mov    {len:w}, #14",
-            "b      100f",
+            "b      199f",
             "315:",  // len=15
             "adc    {out_hi}, {out_hi}, {off15_hi}",
             "mov    {len:w}, #15",
 
-            "100:",
+            "199:",
 
             ptr = in(reg) data.as_ptr(),
             off2 = in(reg) OFFSET2,
@@ -1388,11 +1388,11 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
 
             // len=1 handler (32 bytes)
             ".p2align 5",
-            "1:",
+            "9:",
             "and    {p1:r}, 0x7F",
             "mov    {out_lo:r}, {p1:r}",
             "xor    {out_hi:e}, {out_hi:e}",
-            "jmp    100f",
+            "jmp    199f",
             "nop", "nop", "nop", "nop",
 
             // len=2: 1 data byte
@@ -1402,7 +1402,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "or     {out_lo:r}, {p1:r}",
             "add    {out_lo:r}, {off2:r}",
             "xor    {out_hi:e}, {out_hi:e}",
-            "jmp    100f",
+            "jmp    199f",
             "nop",
 
             // len=3: 2 data bytes
@@ -1412,7 +1412,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "or     {out_lo:r}, {p1:r}",
             "add    {out_lo:r}, {off3:r}",
             "xor    {out_hi:e}, {out_hi:e}",
-            "jmp    100f",
+            "jmp    199f",
             "nop",
 
             // len=4: 3 data bytes
@@ -1423,7 +1423,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "or     {out_lo:r}, {p1:r}",
             "add    {out_lo:r}, {off4:r}",
             "xor    {out_hi:e}, {out_hi:e}",
-            "jmp    100f",
+            "jmp    199f",
 
             // len=5: 4 data bytes
             "mov    {out_lo:e}, dword ptr [{ptr} + 1]",
@@ -1432,7 +1432,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "or     {out_lo:r}, {p1:r}",
             "add    {out_lo:r}, {off5:r}",
             "xor    {out_hi:e}, {out_hi:e}",
-            "jmp    100f",
+            "jmp    199f",
             "nop", "nop",
 
             // len=6: 5 data bytes
@@ -1443,7 +1443,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "or     {out_lo:r}, {p1:r}",
             "add    {out_lo:r}, {off6:r}",
             "xor    {out_hi:e}, {out_hi:e}",
-            "jmp    100f",
+            "jmp    199f",
 
             // len=7: 6 data bytes
             "mov    {out_lo:r}, qword ptr [{ptr} + 1]",
@@ -1453,14 +1453,14 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "or     {out_lo:r}, {p1:r}",
             "add    {out_lo:r}, {off7:r}",
             "xor    {out_hi:e}, {out_hi:e}",
-            "jmp    100f",
+            "jmp    199f",
 
             // len=8: 7 data bytes
             "mov    {out_lo:r}, qword ptr [{ptr} + 1]",
             "and    {out_lo:r}, {mask56:r}",
             "add    {out_lo:r}, {off8:r}",
             "xor    {out_hi:e}, {out_hi:e}",
-            "jmp    100f",
+            "jmp    199f",
             "nop", "nop", "nop",
 
             // === Extended format (p1 == 0) ===
@@ -1496,7 +1496,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off9:r}",
             "adc    {out_hi:r}, {off10_hi:r}",
             "mov    {len:e}, 10",
-            "jmp    100f",
+            "jmp    199f",
             "nop",
 
             // len=11: 9 data bytes
@@ -1508,7 +1508,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off9:r}",
             "adc    {out_hi:r}, {off11_hi:r}",
             "mov    {len:e}, 11",
-            "jmp    100f",
+            "jmp    199f",
 
             // len=12: 10 data bytes
             "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
@@ -1519,7 +1519,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off9:r}",
             "adc    {out_hi:r}, {off12_hi:r}",
             "mov    {len:e}, 12",
-            "jmp    100f",
+            "jmp    199f",
 
             // len=13: 11 data bytes
             "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
@@ -1531,7 +1531,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off9:r}",
             "adc    {out_hi:r}, {off13_hi:r}",
             "mov    {len:e}, 13",
-            "jmp    100f",
+            "jmp    199f",
 
             // len=14: 12 data bytes
             "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
@@ -1542,7 +1542,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off9:r}",
             "adc    {out_hi:r}, {off14_hi:r}",
             "mov    {len:e}, 14",
-            "jmp    100f",
+            "jmp    199f",
 
             // len=15: 13 data bytes
             "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
@@ -1554,7 +1554,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off9:r}",
             "adc    {out_hi:r}, {off15_hi:r}",
             "mov    {len:e}, 15",
-            "jmp    100f",
+            "jmp    199f",
 
             // len=16: 14 data bytes
             "mov    {out_lo:r}, qword ptr [{ptr} + 2]",
@@ -1563,7 +1563,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "add    {out_lo:r}, {off9:r}",
             "adc    {out_hi:r}, {off16_hi:r}",
             "mov    {len:e}, 16",
-            "jmp    100f",
+            "jmp    199f",
             "nop", "nop",
 
             // len=9: p2 >= 0x80
@@ -1576,7 +1576,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "mov    {out_hi:e}, 0",
             "adc    {out_hi:r}, 0",
             "mov    {len:e}, 9",
-            "jmp    100f",
+            "jmp    199f",
 
             // len=18: raw 128-bit (p2 == 0)
             "218:",
@@ -1584,7 +1584,7 @@ pub fn decode_vu128_slice(data: &[u8]) -> (u128, usize) {
             "mov    {out_hi:r}, qword ptr [{ptr} + 10]",
             "mov    {len:e}, 18",
 
-            "100:",
+            "199:",
 
             ptr = in(reg) data.as_ptr(),
             off2 = in(reg) OFFSET2,
