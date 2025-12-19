@@ -145,8 +145,8 @@ fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
     }
 }
 
-/// Encode a u64 in VLQ format using x86_64 inline asm with fast path and combined table.
-/// Uses BMI2 SHRX for variable shifts. Optimized for common small values.
+/// Encode a u64 in VLQ format using x86_64 inline asm with CLZ-based length lookup.
+/// NO MULTIPLICATIONS - uses precomputed tables for O(1) length determination.
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "lzcnt",
@@ -155,91 +155,93 @@ fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
 ))]
 #[inline(always)]
 fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
-    use enc_offsets::OFF9;
-
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
-            // Fast path for len=1 (n < 128) - most common case
+            // Fast path for len=1 (n < 128)
             "cmp    {n:r}, 127",
             "ja     2f",
-            "mov    {t1:e}, {n:e}",
-            "or     {t1:e}, 0x80",
-            "mov    byte ptr [{out:r}], {t1:l}",
+            "mov    {t:e}, {n:e}",
+            "or     {t:e}, 0x80",
+            "mov    byte ptr [{out:r}], {t:l}",
             "mov    qword ptr [{out:r} + 1], 0",
             "jmp    99f",
 
-            // Check for len=9 (avoids overflow in 127*n + 128)
+            // Main path - NO MULTIPLICATIONS
             "2:",
-            "cmp    {n:r}, {off9:r}",
-            "jae    9f",
+            "mov    {t:r}, {n:r}",
+            "or     {t:r}, 1",
+            "lzcnt  {t:r}, {t:r}",
 
-            // Compute 127*n + 128
-            "imul   {t1:r}, {n:r}, 127",
-            "add    {t1:r}, 128",
+            // Load base table pointer
+            "lea    {base:r}, [rip + 77f]",
 
-            // idx = (56 - lzcnt) / 7 = (56 - lzcnt) * 37 >> 8
-            "lzcnt  {t1:r}, {t1:r}",
-            "mov    {idx:e}, 56",
-            "sub    {idx:e}, {t1:e}",
-            "imul   {idx:e}, {idx:e}, 37",
-            "shr    {idx:e}, 8",
+            // len = clz_to_len[clz]
+            "movzx  {len:e}, byte ptr [{base:r} + {t:r}]",
 
-            // Single base pointer for combined table
-            "lea    {t1:r}, [rip + 77f]",
+            // Boundary check: if n >= thresholds[len], len++
+            "mov    {t:r}, [{base:r} + 72 + {len:r}*8]",
+            "cmp    {n:r}, {t:r}",
+            "adc    {len:e}, 0",
 
-            // Load offset and compute data
-            "mov    {data:r}, [{t1:r} + {idx:r}*8]",
-            "mov    {prefix:r}, {n:r}",
-            "sub    {prefix:r}, {data:r}",
-            "mov    {data:r}, {prefix:r}",
+            // Load offset and compute data = n - offset[len]
+            "mov    {t:r}, [{base:r} + 152 + {len:r}*8]",
+            "mov    {data:r}, {n:r}",
+            "sub    {data:r}, {t:r}",
 
-            // Load shift and compute prefix bits
-            "movzx  {prefix:e}, byte ptr [{t1:r} + 72 + {idx:r}]",
-            "shrx   {prefix:r}, {data:r}, {prefix:r}",
+            // Load shift and compute prefix = data >> shift[len]
+            "movzx  {t:e}, byte ptr [{base:r} + 232 + {len:r}]",
+            "shrx   {prefix:r}, {data:r}, {t:r}",
 
-            // Apply mask (at offset 88 after .p2align 3 padding)
-            "and    {prefix:r}, [{t1:r} + 88 + {idx:r}*8]",
+            // Apply mask[len]
+            "and    {prefix:r}, [{base:r} + 248 + {len:r}*8]",
 
-            // Apply prefix OR bits (at offset 160)
-            "or     {prefix:r}, [{t1:r} + 160 + {idx:r}*8]",
+            // Apply prefix_or[len]
+            "or     {prefix:r}, [{base:r} + 328 + {len:r}*8]",
 
             // Write output
             "mov    byte ptr [{out:r}], {prefix:l}",
             "mov    qword ptr [{out:r} + 1], {data:r}",
             "jmp    99f",
 
-            // len=9 case
-            "9:",
-            "mov    {data:r}, {n:r}",
-            "sub    {data:r}, {off9:r}",
-            "mov    byte ptr [{out:r}], 0",
-            "mov    qword ptr [{out:r} + 1], {data:r}",
-            "jmp    99f",
-
-            // Combined table (224 bytes total, fits in 4 cache lines)
+            // Table data
             ".p2align 3",
-            "77:",  // offsets: 9 x 8 bytes = 72 bytes (indices 0-71)
+            "77:",
+            // clz_to_len[65] at offset 0 (65 bytes, padded to 72)
+            ".byte 9,9,9,9,9,9,9, 8,8,8,8,8,8,8, 7,7,7,7,7,7,7, 6,6,6,6,6,6,6",
+            ".byte 5,5,5,5,5,5,5, 4,4,4,4,4,4,4, 3,3,3,3,3,3,3, 2,2,2,2,2,2,2,2",
+            ".byte 1,1,1,1,1,1,1,1,1",
+            ".p2align 3",
+
+            // thresholds[10] at offset 72 (80 bytes) - indexed by len (0 unused)
+            ".quad 0",
+            ".quad 128, 16512, 2113664, 270549120, 34630287488",
+            ".quad 4432676798592, 567382630219904, 72624976668147840, 0xFFFFFFFFFFFFFFFF",
+
+            // offsets[10] at offset 152 (80 bytes) - indexed by len (0 unused)
+            ".quad 0",
             ".quad 0, 0x80, 0x4080, 0x204080, 0x10204080",
             ".quad 0x0810204080, 0x040810204080, 0x02040810204080, 0x0102040810204080",
 
-            // shifts: 9 x 1 byte (offset 72-80)
-            ".byte 0, 8, 16, 24, 32, 40, 48, 56, 0",
-            ".p2align 3",  // pads to offset 88
+            // shifts[10] at offset 232 (10 bytes, padded to 16)
+            ".byte 0, 0, 8, 16, 24, 32, 40, 48, 56, 0",
+            ".p2align 3",
 
-            // masks: 9 x 8 bytes (offset 88-159)
+            // masks[10] at offset 248 (80 bytes) - indexed by len
+            ".quad 0",
             ".quad 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00, 0x00",
 
-            // prefix bits: 9 x 8 bytes (offset 160-231)
+            // prefix_or[10] at offset 328 (80 bytes) - indexed by len
+            ".quad 0",
             ".quad 0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01, 0x00",
 
-            "99:",  // done
+            "99:",
 
             n = in(reg) n,
             out = in(reg) out.as_mut_ptr(),
-            off9 = in(reg) OFF9,
-            t1 = out(reg) _,
-            idx = out(reg) _,
+            t = out(reg) _,
+            base = out(reg) _,
+            len = out(reg) _,
             prefix = out(reg) _,
             data = out(reg) _,
             options(nostack),
