@@ -145,8 +145,8 @@ fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
     }
 }
 
-/// Encode a u64 in VLQ format using x86_64 inline asm with branchless table lookup.
-/// Uses BMI2 SHRX for variable shifts. Tables are embedded inline.
+/// Encode a u64 in VLQ format using x86_64 inline asm with fast path and combined table.
+/// Uses BMI2 SHRX for variable shifts. Optimized for common small values.
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "lzcnt",
@@ -160,7 +160,17 @@ fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
-            // Check for len=9 first (avoids overflow in 127*n + 128)
+            // Fast path for len=1 (n < 128) - most common case
+            "cmp    {n:r}, 127",
+            "ja     2f",
+            "mov    {t1:e}, {n:e}",
+            "or     {t1:e}, 0x80",
+            "mov    byte ptr [{out:r}], {t1:l}",
+            "mov    qword ptr [{out:r} + 1], 0",
+            "jmp    99f",
+
+            // Check for len=9 (avoids overflow in 127*n + 128)
+            "2:",
             "cmp    {n:r}, {off9:r}",
             "jae    9f",
 
@@ -170,35 +180,34 @@ fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
 
             // idx = (56 - lzcnt) / 7 = (56 - lzcnt) * 37 >> 8
             "lzcnt  {t1:r}, {t1:r}",
-            "mov    {t2:e}, 56",
-            "sub    {t2:e}, {t1:e}",
-            "imul   {t2:e}, {t2:e}, 37",
-            "shr    {t2:e}, 8",
-            // t2 = idx
+            "mov    {idx:e}, 56",
+            "sub    {idx:e}, {t1:e}",
+            "imul   {idx:e}, {idx:e}, 37",
+            "shr    {idx:e}, 8",
 
-            // Table lookups via inline data
-            "lea    {t1:r}, [rip + 2f]",
-            "mov    {t1:r}, [{t1:r} + {t2:r}*8]",
-            // t1 = offset
-            "mov    {data:r}, {n:r}",
-            "sub    {data:r}, {t1:r}",
-            // data = n - offset
+            // Single base pointer for combined table
+            "lea    {t1:r}, [rip + 10f]",
 
-            "lea    {t1:r}, [rip + 3f]",
-            "mov    {t1:r}, [{t1:r} + {t2:r}*8]",
-            // t1 = shift
-            "shrx   {prefix:r}, {data:r}, {t1:r}",
+            // Load offset and compute data
+            "mov    {data:r}, [{t1:r} + {idx:r}*8]",
+            "mov    {prefix:r}, {n:r}",
+            "sub    {prefix:r}, {data:r}",
+            "mov    {data:r}, {prefix:r}",
 
-            "lea    {t1:r}, [rip + 4f]",
-            "and    {prefix:r}, [{t1:r} + {t2:r}*8]",
+            // Load shift and compute prefix bits
+            "movzx  {prefix:e}, byte ptr [{t1:r} + 72 + {idx:r}]",
+            "shrx   {prefix:r}, {data:r}, {prefix:r}",
 
-            "lea    {t1:r}, [rip + 5f]",
-            "or     {prefix:r}, [{t1:r} + {t2:r}*8]",
+            // Apply mask (at offset 88 after .p2align 3 padding)
+            "and    {prefix:r}, [{t1:r} + 88 + {idx:r}*8]",
+
+            // Apply prefix OR bits (at offset 160)
+            "or     {prefix:r}, [{t1:r} + 160 + {idx:r}*8]",
 
             // Write output
             "mov    byte ptr [{out:r}], {prefix:l}",
             "mov    qword ptr [{out:r} + 1], {data:r}",
-            "jmp    6f",
+            "jmp    99f",
 
             // len=9 case
             "9:",
@@ -206,30 +215,31 @@ fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
             "sub    {data:r}, {off9:r}",
             "mov    byte ptr [{out:r}], 0",
             "mov    qword ptr [{out:r} + 1], {data:r}",
-            "jmp    6f",
+            "jmp    99f",
 
-            // Inline tables
+            // Combined table (224 bytes total, fits in 4 cache lines)
             ".p2align 3",
-            "2:",  // offsets
+            "10:",  // offsets: 9 x 8 bytes = 72 bytes (indices 0-71)
             ".quad 0, 0x80, 0x4080, 0x204080, 0x10204080",
             ".quad 0x0810204080, 0x040810204080, 0x02040810204080, 0x0102040810204080",
 
-            "3:",  // shifts
-            ".quad 0, 8, 16, 24, 32, 40, 48, 56, 0",
+            // shifts: 9 x 1 byte (offset 72-80)
+            ".byte 0, 8, 16, 24, 32, 40, 48, 56, 0",
+            ".p2align 3",  // pads to offset 88
 
-            "4:",  // masks
+            // masks: 9 x 8 bytes (offset 88-159)
             ".quad 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00, 0x00",
 
-            "5:",  // prefix bits
+            // prefix bits: 9 x 8 bytes (offset 160-231)
             ".quad 0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01, 0x00",
 
-            "6:",  // done
+            "99:",  // done
 
             n = in(reg) n,
             out = in(reg) out.as_mut_ptr(),
             off9 = in(reg) OFF9,
             t1 = out(reg) _,
-            t2 = out(reg) _,
+            idx = out(reg) _,
             prefix = out(reg) _,
             data = out(reg) _,
             options(nostack),
