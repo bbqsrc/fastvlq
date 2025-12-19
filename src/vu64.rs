@@ -186,7 +186,7 @@ fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
             "shr    {idx:e}, 8",
 
             // Single base pointer for combined table
-            "lea    {t1:r}, [rip + 10f]",
+            "lea    {t1:r}, [rip + 77f]",
 
             // Load offset and compute data
             "mov    {data:r}, [{t1:r} + {idx:r}*8]",
@@ -219,7 +219,7 @@ fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
 
             // Combined table (224 bytes total, fits in 4 cache lines)
             ".p2align 3",
-            "10:",  // offsets: 9 x 8 bytes = 72 bytes (indices 0-71)
+            "77:",  // offsets: 9 x 8 bytes = 72 bytes (indices 0-71)
             ".quad 0, 0x80, 0x4080, 0x204080, 0x10204080",
             ".quad 0x0810204080, 0x040810204080, 0x02040810204080, 0x0102040810204080",
 
