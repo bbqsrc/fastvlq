@@ -145,8 +145,8 @@ fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
     }
 }
 
-/// Encode a u64 in VLQ format using x86_64 inline asm with CLZ-based length lookup.
-/// NO MULTIPLICATIONS - uses precomputed tables for O(1) length determination.
+/// Encode a u64 in VLQ format using x86_64 inline asm with computed branch dispatch.
+/// O(1) branchless index computation, then computed jump to handler.
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "lzcnt",
@@ -155,93 +155,141 @@ fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
 ))]
 #[inline(always)]
 fn encode_vu64_impl(n: u64, out: &mut [u8; VU64_BUF_SIZE]) {
+    use enc_offsets::*;
     // SAFETY: Writing to valid buffer.
     unsafe {
         core::arch::asm!(
-            // Fast path for len=1 (n < 128)
-            "cmp    {n:r}, 127",
-            "ja     2f",
-            "mov    {t:e}, {n:e}",
-            "or     {t:e}, 0x80",
-            "mov    byte ptr [{out:r}], {t:l}",
-            "mov    qword ptr [{out:r} + 1], 0",
-            "jmp    99f",
+            // Branchless idx computation:
+            // For n >= OFF9, the multiply overflows but we fix with cmov
+            // idx = (56 - clz(127*n + 128)) * 37 >> 8, clamped to 0-8
 
-            // Main path - NO MULTIPLICATIONS
-            "2:",
-            "mov    {t:r}, {n:r}",
-            "or     {t:r}, 1",
-            "lzcnt  {t:r}, {t:r}",
+            // Compute 127*n + 128 (may overflow for large n, that's OK)
+            "imul   {t}, {n}, 127",
+            "add    {t}, 128",
 
-            // Load base table pointer
-            "lea    {base:r}, [rip + 77f]",
+            // Get CLZ and compute idx = (56 - clz) * 37 >> 8
+            "lzcnt  {t}, {t}",
+            "mov    {idx:e}, 56",
+            "sub    {idx:e}, {t:e}",
+            "imul   {idx:e}, {idx:e}, 37",
+            "shr    {idx:e}, 8",
 
-            // len = clz_to_len[clz]
-            "movzx  {len:e}, byte ptr [{base:r} + {t:r}]",
+            // Branchless fixup: if n >= OFF9, set idx = 8
+            "cmp    {n}, {off9}",
+            "mov    {t:e}, 8",
+            "cmovae {idx:e}, {t:e}",
 
-            // Boundary check: if n >= thresholds[len], len++
-            "mov    {t:r}, [{base:r} + 72 + {len:r}*8]",
-            "cmp    {n:r}, {t:r}",
-            "adc    {len:e}, 0",
+            // Computed branch - each handler is 32 bytes
+            "lea    {t}, [rip + 77f]",
+            "shl    {idx:e}, 5",
+            "add    {t}, {idx}",
+            "jmp    {t}",
 
-            // Load offset and compute data = n - offset[len]
-            "mov    {t:r}, [{base:r} + 152 + {len:r}*8]",
-            "mov    {data:r}, {n:r}",
-            "sub    {data:r}, {t:r}",
-
-            // Load shift and compute prefix = data >> shift[len]
-            "movzx  {t:e}, byte ptr [{base:r} + 232 + {len:r}]",
-            "shrx   {prefix:r}, {data:r}, {t:r}",
-
-            // Apply mask[len]
-            "and    {prefix:r}, [{base:r} + 248 + {len:r}*8]",
-
-            // Apply prefix_or[len]
-            "or     {prefix:r}, [{base:r} + 328 + {len:r}*8]",
-
-            // Write output
-            "mov    byte ptr [{out:r}], {prefix:l}",
-            "mov    qword ptr [{out:r} + 1], {data:r}",
-            "jmp    99f",
-
-            // Table data
-            ".p2align 3",
+            // Handler table - each handler is 32 bytes (aligned)
+            ".p2align 5",
             "77:",
-            // clz_to_len[65] at offset 0 (65 bytes, padded to 72)
-            ".byte 9,9,9,9,9,9,9, 8,8,8,8,8,8,8, 7,7,7,7,7,7,7, 6,6,6,6,6,6,6",
-            ".byte 5,5,5,5,5,5,5, 4,4,4,4,4,4,4, 3,3,3,3,3,3,3, 2,2,2,2,2,2,2,2",
-            ".byte 1,1,1,1,1,1,1,1,1",
-            ".p2align 3",
+            // idx=0 (len=1): n < 128
+            "mov    {prefix:e}, {n:e}",
+            "or     {prefix:e}, 0x80",
+            "mov    byte ptr [{out}], {prefix:l}",
+            "mov    qword ptr [{out} + 1], 0",
+            "jmp    99f",
+            ".p2align 5",
 
-            // thresholds[10] at offset 72 (80 bytes) - indexed by len (0 unused)
-            ".quad 0",
-            ".quad 128, 16512, 2113664, 270549120, 34630287488",
-            ".quad 4432676798592, 567382630219904, 72624976668147840, 0xFFFFFFFFFFFFFFFF",
+            // idx=1 (len=2): 128 <= n < 16512
+            "mov    {data}, {n}",
+            "sub    {data}, {off2}",
+            "mov    {prefix}, {data}",
+            "shr    {prefix}, 8",
+            "or     {prefix:e}, 0x40",
+            "mov    byte ptr [{out}], {prefix:l}",
+            "mov    qword ptr [{out} + 1], {data}",
+            "jmp    99f",
+            ".p2align 5",
 
-            // offsets[10] at offset 152 (80 bytes) - indexed by len (0 unused)
-            ".quad 0",
-            ".quad 0, 0x80, 0x4080, 0x204080, 0x10204080",
-            ".quad 0x0810204080, 0x040810204080, 0x02040810204080, 0x0102040810204080",
+            // idx=2 (len=3): 16512 <= n < 2113664
+            "mov    {data}, {n}",
+            "sub    {data}, {off3}",
+            "mov    {prefix}, {data}",
+            "shr    {prefix}, 16",
+            "or     {prefix:e}, 0x20",
+            "mov    byte ptr [{out}], {prefix:l}",
+            "mov    qword ptr [{out} + 1], {data}",
+            "jmp    99f",
+            ".p2align 5",
 
-            // shifts[10] at offset 232 (10 bytes, padded to 16)
-            ".byte 0, 0, 8, 16, 24, 32, 40, 48, 56, 0",
-            ".p2align 3",
+            // idx=3 (len=4): 2113664 <= n < 270549120
+            "mov    {data}, {n}",
+            "sub    {data}, {off4}",
+            "mov    {prefix}, {data}",
+            "shr    {prefix}, 24",
+            "or     {prefix:e}, 0x10",
+            "mov    byte ptr [{out}], {prefix:l}",
+            "mov    qword ptr [{out} + 1], {data}",
+            "jmp    99f",
+            ".p2align 5",
 
-            // masks[10] at offset 248 (80 bytes) - indexed by len
-            ".quad 0",
-            ".quad 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00, 0x00",
+            // idx=4 (len=5): 270549120 <= n < 34630287488
+            "mov    {data}, {n}",
+            "sub    {data}, {off5}",
+            "mov    {prefix}, {data}",
+            "shr    {prefix}, 32",
+            "or     {prefix:e}, 0x08",
+            "mov    byte ptr [{out}], {prefix:l}",
+            "mov    qword ptr [{out} + 1], {data}",
+            "jmp    99f",
+            ".p2align 5",
 
-            // prefix_or[10] at offset 328 (80 bytes) - indexed by len
-            ".quad 0",
-            ".quad 0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01, 0x00",
+            // idx=5 (len=6): 34630287488 <= n < 4432676798592
+            "mov    {data}, {n}",
+            "sub    {data}, {off6}",
+            "mov    {prefix}, {data}",
+            "shr    {prefix}, 40",
+            "or     {prefix:e}, 0x04",
+            "mov    byte ptr [{out}], {prefix:l}",
+            "mov    qword ptr [{out} + 1], {data}",
+            "jmp    99f",
+            ".p2align 5",
+
+            // idx=6 (len=7): 4432676798592 <= n < 567382630219904
+            "mov    {data}, {n}",
+            "sub    {data}, {off7}",
+            "mov    {prefix}, {data}",
+            "shr    {prefix}, 48",
+            "or     {prefix:e}, 0x02",
+            "mov    byte ptr [{out}], {prefix:l}",
+            "mov    qword ptr [{out} + 1], {data}",
+            "jmp    99f",
+            ".p2align 5",
+
+            // idx=7 (len=8): 567382630219904 <= n < 72624976668147840
+            "mov    {data}, {n}",
+            "sub    {data}, {off8}",
+            "mov    byte ptr [{out}], 0x01",
+            "mov    qword ptr [{out} + 1], {data}",
+            "jmp    99f",
+            ".p2align 5",
+
+            // idx=8 (len=9): n >= 72624976668147840
+            "mov    {data}, {n}",
+            "sub    {data}, {off9}",
+            "mov    byte ptr [{out}], 0x00",
+            "mov    qword ptr [{out} + 1], {data}",
 
             "99:",
 
             n = in(reg) n,
             out = in(reg) out.as_mut_ptr(),
+            off2 = in(reg) OFF2,
+            off3 = in(reg) OFF3,
+            off4 = in(reg) OFF4,
+            off5 = in(reg) OFF5,
+            off6 = in(reg) OFF6,
+            off7 = in(reg) OFF7,
+            off8 = in(reg) OFF8,
+            off9 = in(reg) OFF9,
             t = out(reg) _,
-            base = out(reg) _,
-            len = out(reg) _,
+            idx = out(reg) _,
             prefix = out(reg) _,
             data = out(reg) _,
             options(nostack),
@@ -387,6 +435,12 @@ pub fn encode_vu64(n: u64) -> Vu64 {
             ])
         }
     }
+}
+
+/// Decode a u64 from a Vu64.
+#[inline(always)]
+pub fn decode_vu64(n: Vu64) -> u64 {
+    n.get()
 }
 
 /// Decode a u64 from a byte slice using CLZ dispatch aarch64 assembly.

@@ -62,9 +62,9 @@ pub mod ileb128;
 use std::io::{Read, Result as IoResult, Write};
 
 // Unsigned types
-pub use vu32::{Vu32, decode_vu32_slice, encode_vu32};
-pub use vu64::{Vu64, decode_vu64_slice, encode_vu64};
-pub use vu128::{Vu128, decode_vu128_slice, encode_vu128};
+pub use vu32::{Vu32, decode_vu32, decode_vu32_slice, encode_vu32};
+pub use vu64::{Vu64, decode_vu64, decode_vu64_slice, encode_vu64};
+pub use vu128::{Vu128, decode_vu128, decode_vu128_slice, encode_vu128};
 
 // Batch encoding
 pub use batch::{encode_vu64_batch, encode_vu64_batch_alloc};

@@ -46,6 +46,12 @@ pub fn encode_vu128(n: u128) -> Vu128 {
     Vu128(buf)
 }
 
+/// Decode a u128 from a Vu128.
+#[inline(always)]
+pub fn decode_vu128(n: Vu128) -> u128 {
+    n.get()
+}
+
 /// Decode a u128 from a byte slice.
 ///
 /// Returns (value, bytes_consumed). Returns (0, 0) for empty/invalid input.

@@ -79,6 +79,12 @@ pub fn encode_vu32(n: u32) -> Vu32 {
     }
 }
 
+/// Decode a u32 from a Vu32.
+#[inline(always)]
+pub fn decode_vu32(n: Vu32) -> u32 {
+    n.get()
+}
+
 /// Decode a u32 from a byte slice.
 /// Returns (0, 0) for empty or invalid input.
 #[inline(always)]
