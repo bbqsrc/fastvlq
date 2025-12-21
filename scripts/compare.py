@@ -111,24 +111,25 @@ def parse_criterion_output(criterion_dir: Path) -> dict:
         if not type_dir.is_dir() or type_dir.name in ("report",):
             continue
 
-        type_name = type_dir.name
+        dir_name = type_dir.name
+
+        # New structure: "u64_encode" or "u64_decode"
+        if "_encode" in dir_name:
+            type_name = dir_name.replace("_encode", "")
+            operation = "encode"
+        elif "_decode" in dir_name:
+            type_name = dir_name.replace("_decode", "")
+            operation = "decode"
+        else:
+            continue  # Skip unknown dirs
 
         for bench_dir in type_dir.iterdir():
             if not bench_dir.is_dir():
                 continue
 
-            # Parse benchmark name: "encode_fastvint", "decode_leb128", or "decode_control"
-            bench_name = bench_dir.name
-            if "_fastvint" in bench_name:
-                impl = "fastvint"
-                operation = bench_name.replace("_fastvint", "")
-            elif "_leb128" in bench_name:
-                impl = "leb128"
-                operation = bench_name.replace("_leb128", "")
-            elif "_control" in bench_name:
-                impl = "control"
-                operation = bench_name.replace("_control", "")
-            else:
+            # bench_dir.name is now just "fastvint", "leb128", or "control"
+            impl = bench_dir.name
+            if impl not in ("fastvint", "leb128", "control"):
                 continue
 
             for value_dir in bench_dir.iterdir():
