@@ -45,9 +45,6 @@ mod vu128;
 mod vu32;
 mod vu64;
 
-#[cfg(feature = "string")]
-mod string;
-
 pub mod batch;
 
 #[cfg(any(test, feature = "bench"))]

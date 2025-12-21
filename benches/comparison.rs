@@ -125,42 +125,49 @@ const I128_TESTS: &[(&str, i128)] = &[
     ("17_byte_neg", i128::MIN + 3),
 ];
 
-fn bench_u32(c: &mut Criterion) {
-    let mut group = c.benchmark_group("u32");
+// u32
+
+fn bench_u32_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("u32_encode");
     group.throughput(Throughput::Elements(1));
 
     for &(name, value) in U32_TESTS {
-        // Encode benchmarks
         group.bench_with_input(
-            BenchmarkId::new("encode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &value,
             |b, &v| b.iter(|| encode_vu32(black_box(v))),
         );
-        group.bench_with_input(BenchmarkId::new("encode/leb128", name), &value, |b, &v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &value, |b, &v| {
             let mut buf = [0u8; ULEB128_U32_BUF_SIZE];
             b.iter(|| encode_uleb128_u32(black_box(v), &mut buf))
         });
+    }
+    group.finish();
+}
 
-        // Decode benchmarks
+fn bench_u32_decode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("u32_decode");
+    group.throughput(Throughput::Elements(1));
+
+    for &(name, value) in U32_TESTS {
         let encoded_vlq = encode_vu32(value);
         let vlq_bytes = encoded_vlq.bytes();
         group.bench_with_input(
-            BenchmarkId::new("decode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &vlq_bytes,
             |b, v| b.iter(|| decode_vu32_slice(black_box(v))),
         );
 
         let mut leb_buf = [0u8; ULEB128_U32_BUF_SIZE];
         encode_uleb128_u32(value, &mut leb_buf);
-        group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_uleb128_u32(black_box(v)))
         });
 
-        // Control: fixed-size read from slice with bounds check
         let control_buf = value.to_le_bytes();
         let control_slice: &[u8] = &control_buf;
         group.bench_with_input(
-            BenchmarkId::new("decode/control", name),
+            BenchmarkId::new("control", name),
             &control_slice,
             |b, v| b.iter(|| u32::from_le_bytes(black_box(*v)[..4].try_into().unwrap())),
         );
@@ -168,42 +175,49 @@ fn bench_u32(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_i32(c: &mut Criterion) {
-    let mut group = c.benchmark_group("i32");
+// i32
+
+fn bench_i32_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("i32_encode");
     group.throughput(Throughput::Elements(1));
 
     for &(name, value) in I32_TESTS {
-        // Encode benchmarks
         group.bench_with_input(
-            BenchmarkId::new("encode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &value,
             |b, &v| b.iter(|| encode_vi32(black_box(v))),
         );
-        group.bench_with_input(BenchmarkId::new("encode/leb128", name), &value, |b, &v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &value, |b, &v| {
             let mut buf = [0u8; ILEB128_I32_BUF_SIZE];
             b.iter(|| encode_ileb128_i32(black_box(v), &mut buf))
         });
+    }
+    group.finish();
+}
 
-        // Decode benchmarks
+fn bench_i32_decode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("i32_decode");
+    group.throughput(Throughput::Elements(1));
+
+    for &(name, value) in I32_TESTS {
         let encoded_vlq = encode_vi32(value);
         let vlq_bytes = encoded_vlq.bytes();
         group.bench_with_input(
-            BenchmarkId::new("decode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &vlq_bytes,
             |b, v| b.iter(|| decode_vi32_slice(black_box(v))),
         );
 
         let mut leb_buf = [0u8; ILEB128_I32_BUF_SIZE];
         encode_ileb128_i32(value, &mut leb_buf);
-        group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_ileb128_i32(black_box(v)))
         });
 
-        // Control: fixed-size read from slice with bounds check
         let control_buf = value.to_le_bytes();
         let control_slice: &[u8] = &control_buf;
         group.bench_with_input(
-            BenchmarkId::new("decode/control", name),
+            BenchmarkId::new("control", name),
             &control_slice,
             |b, v| b.iter(|| i32::from_le_bytes(black_box(*v)[..4].try_into().unwrap())),
         );
@@ -211,42 +225,49 @@ fn bench_i32(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_u64(c: &mut Criterion) {
-    let mut group = c.benchmark_group("u64");
+// u64
+
+fn bench_u64_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("u64_encode");
     group.throughput(Throughput::Elements(1));
 
     for &(name, value) in U64_TESTS {
-        // Encode benchmarks
         group.bench_with_input(
-            BenchmarkId::new("encode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &value,
             |b, &v| b.iter(|| encode_vu64(black_box(v))),
         );
-        group.bench_with_input(BenchmarkId::new("encode/leb128", name), &value, |b, &v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &value, |b, &v| {
             let mut buf = [0u8; ULEB128_U64_BUF_SIZE];
             b.iter(|| encode_uleb128_u64(black_box(v), &mut buf))
         });
+    }
+    group.finish();
+}
 
-        // Decode benchmarks
+fn bench_u64_decode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("u64_decode");
+    group.throughput(Throughput::Elements(1));
+
+    for &(name, value) in U64_TESTS {
         let encoded_vlq = encode_vu64(value);
         let vlq_bytes = encoded_vlq.bytes();
         group.bench_with_input(
-            BenchmarkId::new("decode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &vlq_bytes,
             |b, v| b.iter(|| decode_vu64_slice(black_box(v))),
         );
 
         let mut leb_buf = [0u8; ULEB128_U64_BUF_SIZE];
         encode_uleb128_u64(value, &mut leb_buf);
-        group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_uleb128_u64(black_box(v)))
         });
 
-        // Control: fixed-size read from slice with bounds check
         let control_buf = value.to_le_bytes();
         let control_slice: &[u8] = &control_buf;
         group.bench_with_input(
-            BenchmarkId::new("decode/control", name),
+            BenchmarkId::new("control", name),
             &control_slice,
             |b, v| b.iter(|| u64::from_le_bytes(black_box(*v)[..8].try_into().unwrap())),
         );
@@ -254,42 +275,49 @@ fn bench_u64(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_i64(c: &mut Criterion) {
-    let mut group = c.benchmark_group("i64");
+// i64
+
+fn bench_i64_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("i64_encode");
     group.throughput(Throughput::Elements(1));
 
     for &(name, value) in I64_TESTS {
-        // Encode benchmarks
         group.bench_with_input(
-            BenchmarkId::new("encode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &value,
             |b, &v| b.iter(|| encode_vi64(black_box(v))),
         );
-        group.bench_with_input(BenchmarkId::new("encode/leb128", name), &value, |b, &v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &value, |b, &v| {
             let mut buf = [0u8; ILEB128_I64_BUF_SIZE];
             b.iter(|| encode_ileb128_i64(black_box(v), &mut buf))
         });
+    }
+    group.finish();
+}
 
-        // Decode benchmarks
+fn bench_i64_decode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("i64_decode");
+    group.throughput(Throughput::Elements(1));
+
+    for &(name, value) in I64_TESTS {
         let encoded_vlq = encode_vi64(value);
         let vlq_bytes = encoded_vlq.bytes();
         group.bench_with_input(
-            BenchmarkId::new("decode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &vlq_bytes,
             |b, v| b.iter(|| decode_vi64_slice(black_box(v))),
         );
 
         let mut leb_buf = [0u8; ILEB128_I64_BUF_SIZE];
         encode_ileb128_i64(value, &mut leb_buf);
-        group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_ileb128_i64(black_box(v)))
         });
 
-        // Control: fixed-size read from slice with bounds check
         let control_buf = value.to_le_bytes();
         let control_slice: &[u8] = &control_buf;
         group.bench_with_input(
-            BenchmarkId::new("decode/control", name),
+            BenchmarkId::new("control", name),
             &control_slice,
             |b, v| b.iter(|| i64::from_le_bytes(black_box(*v)[..8].try_into().unwrap())),
         );
@@ -297,42 +325,49 @@ fn bench_i64(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_u128(c: &mut Criterion) {
-    let mut group = c.benchmark_group("u128");
+// u128
+
+fn bench_u128_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("u128_encode");
     group.throughput(Throughput::Elements(1));
 
     for &(name, value) in U128_TESTS {
-        // Encode benchmarks
         group.bench_with_input(
-            BenchmarkId::new("encode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &value,
             |b, &v| b.iter(|| encode_vu128(black_box(v))),
         );
-        group.bench_with_input(BenchmarkId::new("encode/leb128", name), &value, |b, &v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &value, |b, &v| {
             let mut buf = [0u8; ULEB128_U128_BUF_SIZE];
             b.iter(|| encode_uleb128_u128(black_box(v), &mut buf))
         });
+    }
+    group.finish();
+}
 
-        // Decode benchmarks
+fn bench_u128_decode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("u128_decode");
+    group.throughput(Throughput::Elements(1));
+
+    for &(name, value) in U128_TESTS {
         let encoded_vlq = encode_vu128(value);
         let vlq_bytes = encoded_vlq.bytes();
         group.bench_with_input(
-            BenchmarkId::new("decode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &vlq_bytes,
             |b, v| b.iter(|| decode_vu128_slice(black_box(v))),
         );
 
         let mut leb_buf = [0u8; ULEB128_U128_BUF_SIZE];
         encode_uleb128_u128(value, &mut leb_buf);
-        group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_uleb128_u128(black_box(v)))
         });
 
-        // Control: fixed-size read from slice with bounds check
         let control_buf = value.to_le_bytes();
         let control_slice: &[u8] = &control_buf;
         group.bench_with_input(
-            BenchmarkId::new("decode/control", name),
+            BenchmarkId::new("control", name),
             &control_slice,
             |b, v| b.iter(|| u128::from_le_bytes(black_box(*v)[..16].try_into().unwrap())),
         );
@@ -340,42 +375,49 @@ fn bench_u128(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_i128(c: &mut Criterion) {
-    let mut group = c.benchmark_group("i128");
+// i128
+
+fn bench_i128_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("i128_encode");
     group.throughput(Throughput::Elements(1));
 
     for &(name, value) in I128_TESTS {
-        // Encode benchmarks
         group.bench_with_input(
-            BenchmarkId::new("encode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &value,
             |b, &v| b.iter(|| encode_vi128(black_box(v))),
         );
-        group.bench_with_input(BenchmarkId::new("encode/leb128", name), &value, |b, &v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &value, |b, &v| {
             let mut buf = [0u8; ILEB128_I128_BUF_SIZE];
             b.iter(|| encode_ileb128_i128(black_box(v), &mut buf))
         });
+    }
+    group.finish();
+}
 
-        // Decode benchmarks
+fn bench_i128_decode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("i128_decode");
+    group.throughput(Throughput::Elements(1));
+
+    for &(name, value) in I128_TESTS {
         let encoded_vlq = encode_vi128(value);
         let vlq_bytes = encoded_vlq.bytes();
         group.bench_with_input(
-            BenchmarkId::new("decode/fastvint", name),
+            BenchmarkId::new("fastvint", name),
             &vlq_bytes,
             |b, v| b.iter(|| decode_vi128_slice(black_box(v))),
         );
 
         let mut leb_buf = [0u8; ILEB128_I128_BUF_SIZE];
         encode_ileb128_i128(value, &mut leb_buf);
-        group.bench_with_input(BenchmarkId::new("decode/leb128", name), &leb_buf, |b, v| {
+        group.bench_with_input(BenchmarkId::new("leb128", name), &leb_buf, |b, v| {
             b.iter(|| decode_ileb128_i128(black_box(v)))
         });
 
-        // Control: fixed-size read from slice with bounds check
         let control_buf = value.to_le_bytes();
         let control_slice: &[u8] = &control_buf;
         group.bench_with_input(
-            BenchmarkId::new("decode/control", name),
+            BenchmarkId::new("control", name),
             &control_slice,
             |b, v| b.iter(|| i128::from_le_bytes(black_box(*v)[..16].try_into().unwrap())),
         );
@@ -384,6 +426,12 @@ fn bench_i128(c: &mut Criterion) {
 }
 
 criterion_group!(
-    benches, bench_u32, bench_i32, bench_u64, bench_i64, bench_u128, bench_i128
+    benches,
+    bench_u32_encode, bench_u32_decode,
+    bench_i32_encode, bench_i32_decode,
+    bench_u64_encode, bench_u64_decode,
+    bench_i64_encode, bench_i64_decode,
+    bench_u128_encode, bench_u128_decode,
+    bench_i128_encode, bench_i128_decode
 );
 criterion_main!(benches);

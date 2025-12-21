@@ -626,37 +626,33 @@ pub fn decode_vu64_slice(data: &[u8]) -> (u64, usize) {
             // Load 8 raw bytes from ptr+1
             "mov    {out:r}, qword ptr [{ptr:r} + 1]",
 
-            // Table lookups via inline data
-            "lea    {t:r}, [rip + 22f]",
-            "and    {out:r}, [{t:r} + {idx:r}*8]",
+            // Compute bits = idx * 8 (for BZHI and SHLX)
+            "lea    {bits:r}, [{idx:r}*8]",
 
+            // BZHI to mask trailing bytes (replaces dmasks table lookup)
+            "bzhi   {out:r}, {out:r}, {bits:r}",
+
+            // Prefix mask lookup (still needed - non-trivial pattern)
             "lea    {t:r}, [rip + 23f]",
             "and    {prefix:r}, [{t:r} + {idx:r}*8]",
 
-            "lea    {t:r}, [rip + 24f]",
-            "mov    {t:r}, [{t:r} + {idx:r}*8]",
-            "shlx   {prefix:r}, {prefix:r}, {t:r}",
+            // SHLX with computed bits (replaces shifts table lookup)
+            "shlx   {prefix:r}, {prefix:r}, {bits:r}",
             "or     {out:r}, {prefix:r}",
 
+            // Offset lookup (still needed - non-trivial pattern)
             "lea    {t:r}, [rip + 25f]",
             "add    {out:r}, [{t:r} + {idx:r}*8]",
             "jmp    26f",
 
-            // Inline tables
+            // Inline tables (reduced from 4 to 2)
             ".p2align 3",
             "25:",  // offsets
             ".quad 0, 0x80, 0x4080, 0x204080, 0x10204080",
             ".quad 0x0810204080, 0x040810204080, 0x02040810204080, 0x0102040810204080",
 
-            "24:",  // shifts
-            ".quad 0, 8, 16, 24, 32, 40, 48, 56, 0",
-
             "23:",  // pmasks
             ".quad 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01, 0x00, 0x00",
-
-            "22:",  // dmasks
-            ".quad 0, 0xFF, 0xFFFF, 0xFFFFFF, 0xFFFFFFFF",
-            ".quad 0xFFFFFFFFFF, 0xFFFFFFFFFFFF, 0xFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF",
 
             "26:",  // done
 
@@ -665,6 +661,7 @@ pub fn decode_vu64_slice(data: &[u8]) -> (u64, usize) {
             out = out(reg) value,
             len = out(reg) len,
             idx = out(reg) _,
+            bits = out(reg) _,
             t = out(reg) _,
             options(pure, readonly, nostack),
         );
