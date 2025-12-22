@@ -4,10 +4,8 @@
 //! decoding speed. The total number of bytes can always be derived from the very first byte.
 //!
 //! Supported types:
-//! - `Vu21`: unsigned 21-bit (max 3 bytes)
 //! - `Vu32` / `Vi32`: unsigned/signed 32-bit (max 5 bytes)
 //! - `Vu64` / `Vi64`: unsigned/signed 64-bit (max 9 bytes)
-//! - `Vu128` / `Vi128`: unsigned/signed 128-bit (max 18 bytes)
 //!
 //! Signed types use zigzag encoding for efficient storage of small absolute values.
 //!
@@ -38,10 +36,8 @@ mod tokio;
 #[macro_use]
 mod macros;
 
-mod vi128;
 mod vi32;
 mod vi64;
-mod vu128;
 mod vu32;
 mod vu64;
 
@@ -61,7 +57,6 @@ use std::io::{Read, Result as IoResult, Write};
 // Unsigned types
 pub use vu32::{Vu32, decode_vu32, decode_vu32_slice, encode_vu32};
 pub use vu64::{Vu64, decode_vu64, decode_vu64_slice, encode_vu64};
-pub use vu128::{Vu128, decode_vu128, decode_vu128_slice, encode_vu128};
 
 // Batch encoding
 pub use batch::{encode_vu64_batch, encode_vu64_batch_alloc};
@@ -72,9 +67,6 @@ pub use vi32::{
 };
 pub use vi64::{
     Vi64, decode_vi64, decode_vi64_slice, encode_vi64, zigzag_decode_i64, zigzag_encode_i64,
-};
-pub use vi128::{
-    Vi128, decode_vi128, decode_vi128_slice, encode_vi128, zigzag_decode_i128, zigzag_encode_i128,
 };
 
 #[cfg(any(feature = "async-futures", feature = "async-tokio"))]
@@ -91,10 +83,6 @@ pub trait ReadVintExt {
     fn read_vu64(&mut self) -> IoResult<u64>;
     /// Read a variable-length `i64`.
     fn read_vi64(&mut self) -> IoResult<i64>;
-    /// Read a variable-length `u128`.
-    fn read_vu128(&mut self) -> IoResult<u128>;
-    /// Read a variable-length `i128`.
-    fn read_vi128(&mut self) -> IoResult<i128>;
 }
 
 #[cfg(feature = "std")]
@@ -108,10 +96,6 @@ pub trait WriteVintExt {
     fn write_vu64(&mut self, n: u64) -> IoResult<()>;
     /// Write a variable-length `i64`.
     fn write_vi64(&mut self, n: i64) -> IoResult<()>;
-    /// Write a variable-length `u128`.
-    fn write_vu128(&mut self, n: u128) -> IoResult<()>;
-    /// Write a variable-length `i128`.
-    fn write_vi128(&mut self, n: i128) -> IoResult<()>;
 }
 
 #[cfg(feature = "std")]
@@ -143,34 +127,6 @@ impl<R: Read> ReadVintExt for R {
     fn read_vi64(&mut self) -> IoResult<i64> {
         self.read_vu64().map(zigzag_decode_i64)
     }
-
-    fn read_vu128(&mut self) -> IoResult<u128> {
-        let mut buf = [0u8; 1];
-        self.read_exact(&mut buf)?;
-
-        if buf[0] != 0x00 {
-            // Compact: vu64 for lo, hi = 0
-            let mut full_buf = [0u8; vu64::VU64_BUF_SIZE];
-            full_buf[0] = buf[0];
-            let len = vu64::decode_len_vu64(buf[0]) as usize;
-            if len > 1 {
-                self.read_exact(&mut full_buf[1..len])?;
-            }
-            return Ok(decode_vu64_slice(&full_buf[..len]).0 as u128);
-        }
-
-        // Extended: 0x00 + lo raw (8 bytes) + vu64(hi)
-        let mut lo_buf = [0u8; 8];
-        self.read_exact(&mut lo_buf)?;
-        let lo = u64::from_le_bytes(lo_buf);
-
-        let hi = self.read_vu64()?;
-        Ok(((hi as u128) << 64) | (lo as u128))
-    }
-
-    fn read_vi128(&mut self) -> IoResult<i128> {
-        self.read_vu128().map(zigzag_decode_i128)
-    }
 }
 
 #[cfg(feature = "std")]
@@ -191,14 +147,5 @@ impl<W: Write> WriteVintExt for W {
 
     fn write_vi64(&mut self, n: i64) -> IoResult<()> {
         self.write_vu64(zigzag_encode_i64(n))
-    }
-
-    fn write_vu128(&mut self, n: u128) -> IoResult<()> {
-        let v = encode_vu128(n);
-        self.write_all(&v.bytes()[..v.len() as usize])
-    }
-
-    fn write_vi128(&mut self, n: i128) -> IoResult<()> {
-        self.write_vu128(zigzag_encode_i128(n))
     }
 }

@@ -353,7 +353,7 @@ def generate_html(chart_paths: list[Path], output_dir: Path, system_info: dict, 
     </div>
 """
 
-    type_order = ["u32", "i32", "u64", "i64", "u128", "i128"]
+    type_order = ["u32", "i32", "u64", "i64"]
     chart_paths.sort(key=lambda p: type_order.index(p.stem) if p.stem in type_order else 999)
     for path in chart_paths:
         html += f"""    <div class="chart">
@@ -410,7 +410,7 @@ def generate_tables_html(results: dict) -> str:
     """Generate HTML tables showing raw times and speed comparisons."""
     html = ""
 
-    type_order = ["u32", "i32", "u64", "i64", "u128", "i128"]
+    type_order = ["u32", "i32", "u64", "i64"]
     sorted_types = sorted(results.keys(), key=lambda t: type_order.index(t) if t in type_order else 999)
 
     for type_name in sorted_types:

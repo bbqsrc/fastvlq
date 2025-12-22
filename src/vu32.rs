@@ -2,10 +2,6 @@
 
 use core::fmt::{Debug, Display};
 
-#[cfg(any(
-    all(target_arch = "aarch64", feature = "asm"),
-    all(target_arch = "x86_64", target_feature = "lzcnt", feature = "asm")
-))]
 use crate::vu64::{decode_vu64_slice, encode_vu64};
 
 pub(crate) const VU32_BUF_SIZE: usize = 5;

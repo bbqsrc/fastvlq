@@ -10,10 +10,6 @@ pub trait AsyncReadVintExt {
     fn read_vu64(&mut self) -> impl core::future::Future<Output = std::io::Result<u64>>;
     /// Read a variable-length `i64` asynchronously.
     fn read_vi64(&mut self) -> impl core::future::Future<Output = std::io::Result<i64>>;
-    /// Read a variable-length `u128` asynchronously.
-    fn read_vu128(&mut self) -> impl core::future::Future<Output = std::io::Result<u128>>;
-    /// Read a variable-length `i128` asynchronously.
-    fn read_vi128(&mut self) -> impl core::future::Future<Output = std::io::Result<i128>>;
 }
 
 /// Extension trait for writing VLQ-encoded integers to an async writer.
@@ -26,8 +22,4 @@ pub trait AsyncWriteVintExt {
     fn write_vu64(&mut self, n: u64) -> impl core::future::Future<Output = std::io::Result<()>>;
     /// Write a variable-length `i64` asynchronously.
     fn write_vi64(&mut self, n: i64) -> impl core::future::Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `u128` asynchronously.
-    fn write_vu128(&mut self, n: u128) -> impl core::future::Future<Output = std::io::Result<()>>;
-    /// Write a variable-length `i128` asynchronously.
-    fn write_vi128(&mut self, n: i128) -> impl core::future::Future<Output = std::io::Result<()>>;
 }

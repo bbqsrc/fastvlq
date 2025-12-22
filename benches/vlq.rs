@@ -14,13 +14,6 @@ const U64_TESTS: &[(&str, u64)] = &[
     ("large", u64::MAX),
 ];
 
-const U128_TESTS: &[(&str, u128)] = &[
-    ("small", 42),
-    ("medium", 10_000),
-    ("u64_max", u64::MAX as u128),
-    ("large", u128::MAX),
-];
-
 const I32_TESTS: &[(&str, i32)] = &[
     ("small_pos", 42),
     ("small_neg", -42),
@@ -35,15 +28,6 @@ const I64_TESTS: &[(&str, i64)] = &[
     ("medium_neg", -10_000),
     ("large_pos", i64::MAX),
     ("large_neg", i64::MIN),
-];
-
-const I128_TESTS: &[(&str, i128)] = &[
-    ("small_pos", 42),
-    ("small_neg", -42),
-    ("i64_max", i64::MAX as i128),
-    ("i64_min", i64::MIN as i128),
-    ("large_pos", i128::MAX),
-    ("large_neg", i128::MIN),
 ];
 
 // === decode_slice benchmarks ===
@@ -96,17 +80,6 @@ fn bench_decode_vu64(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_decode_vu128(c: &mut Criterion) {
-    let mut group = c.benchmark_group("decode_vu128");
-    for &(name, value) in U128_TESTS {
-        let encoded = encode_vu128(value);
-        group.bench_with_input(BenchmarkId::new("decode", name), &encoded, |b, v| {
-            b.iter(|| decode_vu128(black_box(*v)))
-        });
-    }
-    group.finish();
-}
-
 fn bench_decode_vi32(c: &mut Criterion) {
     let mut group = c.benchmark_group("decode_vi32");
     for &(name, value) in I32_TESTS {
@@ -124,17 +97,6 @@ fn bench_decode_vi64(c: &mut Criterion) {
         let encoded = encode_vi64(value);
         group.bench_with_input(BenchmarkId::new("decode", name), &encoded, |b, v| {
             b.iter(|| decode_vi64(black_box(*v)))
-        });
-    }
-    group.finish();
-}
-
-fn bench_decode_vi128(c: &mut Criterion) {
-    let mut group = c.benchmark_group("decode_vi128");
-    for &(name, value) in I128_TESTS {
-        let encoded = encode_vi128(value);
-        group.bench_with_input(BenchmarkId::new("decode", name), &encoded, |b, v| {
-            b.iter(|| decode_vi128(black_box(*v)))
         });
     }
     group.finish();
@@ -162,16 +124,6 @@ fn bench_encode_vu64(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_encode_vu128(c: &mut Criterion) {
-    let mut group = c.benchmark_group("encode_vu128");
-    for &(name, value) in U128_TESTS {
-        group.bench_with_input(BenchmarkId::new("encode", name), &value, |b, &v| {
-            b.iter(|| encode_vu128(black_box(v)))
-        });
-    }
-    group.finish();
-}
-
 fn bench_encode_vi32(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode_vi32");
     for &(name, value) in I32_TESTS {
@@ -187,16 +139,6 @@ fn bench_encode_vi64(c: &mut Criterion) {
     for &(name, value) in I64_TESTS {
         group.bench_with_input(BenchmarkId::new("encode", name), &value, |b, &v| {
             b.iter(|| encode_vi64(black_box(v)))
-        });
-    }
-    group.finish();
-}
-
-fn bench_encode_vi128(c: &mut Criterion) {
-    let mut group = c.benchmark_group("encode_vi128");
-    for &(name, value) in I128_TESTS {
-        group.bench_with_input(BenchmarkId::new("encode", name), &value, |b, &v| {
-            b.iter(|| encode_vi128(black_box(v)))
         });
     }
     group.finish();
@@ -272,17 +214,13 @@ criterion_group!(
     // decode
     bench_decode_vu32,
     bench_decode_vu64,
-    bench_decode_vu128,
     bench_decode_vi32,
     bench_decode_vi64,
-    bench_decode_vi128,
     // encode
     bench_encode_vu32,
     bench_encode_vu64,
-    bench_encode_vu128,
     bench_encode_vi32,
     bench_encode_vi64,
-    bench_encode_vi128,
     // batch
     bench_encode_batch_1k,
     bench_encode_batch_10k,

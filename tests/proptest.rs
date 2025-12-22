@@ -21,14 +21,4 @@ proptest! {
     fn roundtrip_i32(x: i32) {
         prop_assert_eq!(i32::from(Vi32::from(x)), x);
     }
-
-    #[test]
-    fn roundtrip_u128(x: u128) {
-        prop_assert_eq!(u128::from(Vu128::from(x)), x);
-    }
-
-    #[test]
-    fn roundtrip_i128(x: i128) {
-        prop_assert_eq!(i128::from(Vi128::from(x)), x);
-    }
 }
