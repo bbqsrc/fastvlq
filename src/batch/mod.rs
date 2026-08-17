@@ -19,6 +19,9 @@ mod avx512;
 
 mod fallback;
 
+#[cfg(feature = "alloc")]
+use alloc::{vec, vec::Vec};
+
 /// Maximum encoded size per u64 value (9 bytes).
 pub const VU64_MAX_ENCODED_SIZE: usize = 9;
 
@@ -71,6 +74,7 @@ pub fn encode_vu64_batch(values: &[u64], output: &mut [u8]) -> usize {
 /// Batch encode u64 values to VLQ format, allocating the output buffer.
 ///
 /// Returns a `Vec<u8>` containing the encoded bytes.
+#[cfg(feature = "alloc")]
 #[inline]
 pub fn encode_vu64_batch_alloc(values: &[u64]) -> Vec<u8> {
     // Allocate worst-case size

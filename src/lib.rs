@@ -26,6 +26,9 @@
 #![allow(clippy::cast_lossless)]
 #![deny(missing_docs)]
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 #[cfg(any(feature = "async-futures", feature = "async-tokio"))]
 mod ext;
 #[cfg(all(feature = "async-futures", not(feature = "async-tokio")))]
@@ -59,7 +62,9 @@ pub use vu32::{Vu32, decode_vu32, decode_vu32_slice, encode_vu32};
 pub use vu64::{Vu64, decode_vu64, decode_vu64_slice, encode_vu64};
 
 // Batch encoding
-pub use batch::{encode_vu64_batch, encode_vu64_batch_alloc};
+pub use batch::encode_vu64_batch;
+#[cfg(feature = "alloc")]
+pub use batch::encode_vu64_batch_alloc;
 
 // Signed types
 pub use vi32::{
